@@ -3,4 +3,4 @@
 pub mod dto;
 pub mod http;
 
-pub use http::{router, IamState};
+pub use http::{router, AuthenticatedUser, IamState};
