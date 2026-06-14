@@ -16,3 +16,5 @@ sea-orm-migration = { version = "1.1", features = [
 # 1.1.x as the one re-exported by sea-orm-migration, so it unifies to one version.
 sea-orm = { version = "1.1", features = ["macros"] }
 async-trait = "0.1"
+# The entities (schema source of truth) live in the shared persistence crate.
+persistence = { path = "../persistence" }

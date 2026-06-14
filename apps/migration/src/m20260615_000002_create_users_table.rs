@@ -3,7 +3,7 @@
 use sea_orm::Schema;
 use sea_orm_migration::prelude::*;
 
-use crate::entity::user;
+use persistence::entity::user;
 
 #[derive(DeriveMigrationName)]
 pub struct Migration;
