@@ -2,5 +2,7 @@
 
 pub mod book;
 pub mod chat_message;
+pub mod device;
 pub mod loan;
+pub mod reminder;
 pub mod user;
