@@ -14,6 +14,25 @@ pub enum Platform {
     Web,
 }
 
+impl Platform {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Platform::Android => "android",
+            Platform::Ios => "ios",
+            Platform::Web => "web",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "android" => Some(Platform::Android),
+            "ios" => Some(Platform::Ios),
+            "web" => Some(Platform::Web),
+            _ => None,
+        }
+    }
+}
+
 /// A device token registered to a user. The pair (user, token) is unique — a
 /// repeat registration of the same token refreshes the entry.
 #[derive(Debug, Clone, PartialEq, Eq)]

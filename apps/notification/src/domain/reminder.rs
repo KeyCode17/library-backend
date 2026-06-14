@@ -32,6 +32,22 @@ impl ReminderKind {
             }
         }
     }
+
+    /// Stable wire string (matches the serde representation).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReminderKind::DueSoon => "due_soon",
+            ReminderKind::Overdue => "overdue",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "due_soon" => Some(ReminderKind::DueSoon),
+            "overdue" => Some(ReminderKind::Overdue),
+            _ => None,
+        }
+    }
 }
 
 /// A logged reminder.
