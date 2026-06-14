@@ -66,6 +66,7 @@ mod tests {
         let filter = BookFilter {
             shelf: Some("Tech".to_owned()),
             row: None,
+            isbn: None,
         };
         let page = use_case()
             .execute(&filter, PageRequest::new(1, 20))
@@ -81,6 +82,7 @@ mod tests {
         let filter = BookFilter {
             shelf: Some("Tech".to_owned()),
             row: Some(4),
+            isbn: None,
         };
         let page = use_case()
             .execute(&filter, PageRequest::new(1, 20))
@@ -96,6 +98,7 @@ mod tests {
         let filter = BookFilter {
             shelf: Some("Nonexistent".to_owned()),
             row: None,
+            isbn: None,
         };
         let page = use_case()
             .execute(&filter, PageRequest::new(1, 20))

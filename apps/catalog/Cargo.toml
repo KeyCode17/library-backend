@@ -9,6 +9,7 @@ axum.workspace = true
 serde.workspace = true
 uuid = { workspace = true }
 async-trait = "0.1"
+persistence = { path = "../persistence" }
 
 [dev-dependencies]
 tokio.workspace = true

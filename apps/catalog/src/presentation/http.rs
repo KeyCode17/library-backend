@@ -21,13 +21,15 @@ pub struct CatalogState {
     pub get_book: Arc<GetBook>,
 }
 
-/// Query params for `GET /books`: pagination plus the optional shelf/row finder.
+/// Query params for `GET /books`: pagination plus the optional shelf/row/ISBN
+/// finder.
 #[derive(Debug, Deserialize)]
 struct ListQuery {
     page: Option<u32>,
     page_size: Option<u32>,
     shelf: Option<String>,
     row: Option<i32>,
+    isbn: Option<String>,
 }
 
 /// `GET /books` — public catalog listing in the `{ data, pagination }` envelope,
@@ -40,6 +42,7 @@ async fn list_books(State(state): State<CatalogState>, Query(query): Query<ListQ
     let filter = BookFilter {
         shelf: query.shelf,
         row: query.row,
+        isbn: query.isbn,
     };
 
     match state.list_books.execute(&filter, request).await {
