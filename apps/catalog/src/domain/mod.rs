@@ -10,4 +10,4 @@ pub use book::Book;
 pub use error::RepositoryError;
 pub use filter::BookFilter;
 pub use pagination::{Page, PageRequest};
-pub use repository::BookRepository;
+pub use repository::{BookRepository, ClaimOutcome};

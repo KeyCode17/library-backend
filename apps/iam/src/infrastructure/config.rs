@@ -25,19 +25,15 @@ pub struct IamConfig {
 
 impl IamConfig {
     /// Read config from the environment, applying safe dev fallbacks with loud
-    /// warnings. Real deployments must set `IAM_JWT_SECRET` (and usually
-    /// `IAM_ADMIN_EMAIL` / `IAM_ADMIN_PASSWORD`).
+    /// warnings. In production (`APP_ENV`/`RUST_ENV` = `production`/`prod`) a
+    /// missing `IAM_JWT_SECRET` is fatal — fail closed rather than mint tokens
+    /// with a random per-boot secret.
     pub fn from_env() -> Self {
-        let jwt_secret = match env_nonempty("IAM_JWT_SECRET") {
-            Some(secret) => secret.into_bytes(),
-            None => {
-                eprintln!(
-                    "WARN [iam]: IAM_JWT_SECRET unset; using an ephemeral random dev secret \
-                     (tokens won't survive a restart). Set IAM_JWT_SECRET in real deployments."
-                );
-                random_bytes(32)
-            }
-        };
+        let jwt_secret = resolve_jwt_secret(
+            is_production(),
+            env_nonempty("IAM_JWT_SECRET").map(String::into_bytes),
+        )
+        .unwrap_or_else(|message| panic!("{message}"));
 
         let token_ttl_secs = env_nonempty("IAM_TOKEN_TTL_SECS")
             .and_then(|value| value.parse().ok())
@@ -79,6 +75,36 @@ impl IamConfig {
     }
 }
 
+/// Whether the process is running in production.
+fn is_production() -> bool {
+    let env = env_nonempty("APP_ENV")
+        .or_else(|| env_nonempty("RUST_ENV"))
+        .unwrap_or_default()
+        .to_lowercase();
+    matches!(env.as_str(), "production" | "prod")
+}
+
+/// Resolve the JWT signing secret. Pure (no env access) so the dev/prod policy is
+/// unit-testable: provided → use it; prod + missing → error (fail closed); dev +
+/// missing → an ephemeral random secret (with a warning).
+fn resolve_jwt_secret(is_production: bool, provided: Option<Vec<u8>>) -> Result<Vec<u8>, String> {
+    match (provided, is_production) {
+        (Some(secret), _) => Ok(secret),
+        (None, true) => Err(
+            "IAM_JWT_SECRET must be set in production (APP_ENV/RUST_ENV=production); refusing \
+             to start with a random secret."
+                .to_owned(),
+        ),
+        (None, false) => {
+            eprintln!(
+                "WARN [iam]: IAM_JWT_SECRET unset; using an ephemeral random dev secret \
+                 (tokens won't survive a restart). Set IAM_JWT_SECRET in real deployments."
+            );
+            Ok(random_bytes(32))
+        }
+    }
+}
+
 fn env_nonempty(key: &str) -> Option<String> {
     std::env::var(key)
         .ok()
@@ -99,4 +125,32 @@ fn random_hex(byte_len: usize) -> String {
         let _ = write!(out, "{byte:02x}");
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_jwt_secret;
+
+    #[test]
+    fn provided_secret_is_used_in_any_environment() {
+        assert_eq!(
+            resolve_jwt_secret(true, Some(b"abc".to_vec())).unwrap(),
+            b"abc"
+        );
+        assert_eq!(
+            resolve_jwt_secret(false, Some(b"abc".to_vec())).unwrap(),
+            b"abc"
+        );
+    }
+
+    #[test]
+    fn missing_secret_fails_closed_in_production() {
+        assert!(resolve_jwt_secret(true, None).is_err());
+    }
+
+    #[test]
+    fn missing_secret_falls_back_to_random_in_dev() {
+        let secret = resolve_jwt_secret(false, None).expect("dev fallback");
+        assert_eq!(secret.len(), 32);
+    }
 }

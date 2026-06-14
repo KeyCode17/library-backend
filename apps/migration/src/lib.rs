@@ -10,7 +10,6 @@
 //! entity-derived approach is the faithful equivalent within the FSD-mandated
 //! SeaORM stack.
 
-pub mod entity;
 mod m20260615_000001_create_books_table;
 mod m20260615_000002_create_users_table;
 mod m20260615_000003_create_loans_table;

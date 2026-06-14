@@ -3,7 +3,9 @@ use std::sync::RwLock;
 use async_trait::async_trait;
 use uuid::{uuid, Uuid};
 
-use crate::domain::{Book, BookFilter, BookRepository, Page, PageRequest, RepositoryError};
+use crate::domain::{
+    Book, BookFilter, BookRepository, ClaimOutcome, Page, PageRequest, RepositoryError,
+};
 
 /// In-memory `BookRepository` seeded with a fixed catalog.
 ///
@@ -79,6 +81,19 @@ impl BookRepository for InMemoryBookRepository {
             None => Ok(None),
         }
     }
+
+    async fn claim_if_available(&self, id: Uuid) -> Result<ClaimOutcome, RepositoryError> {
+        // The write lock makes check-and-set atomic for the in-memory store.
+        let mut guard = self.books.write().map_err(|_| poisoned())?;
+        match guard.iter_mut().find(|book| book.id == id) {
+            None => Ok(ClaimOutcome::NotFound),
+            Some(book) if !book.available => Ok(ClaimOutcome::Unavailable),
+            Some(book) => {
+                book.available = false;
+                Ok(ClaimOutcome::Claimed)
+            }
+        }
+    }
 }
 
 fn book(
@@ -102,7 +117,8 @@ fn book(
 }
 
 /// The seed catalog: eight real books across a few shelves.
-fn seed_books() -> Vec<Book> {
+/// The seed catalog, shared by the in-memory store and the Postgres seeder.
+pub(crate) fn seed_books() -> Vec<Book> {
     vec![
         book(
             uuid!("00000000-0000-4000-8000-000000000001"),

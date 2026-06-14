@@ -8,6 +8,7 @@ use crate::domain::{IssuedToken, Role, User};
 
 /// `Credentials` request body for register and login.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CredentialsRequest {
     pub email: String,
     pub password: String,
@@ -52,6 +53,7 @@ impl From<User> for PrincipalResponse {
 
 /// `AssignRoleRequest` body for the admin role-management endpoint.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AssignRoleRequest {
     pub role: Role,
 }

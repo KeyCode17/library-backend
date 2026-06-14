@@ -1,0 +1,18 @@
+[package]
+name = "persistence"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Shared SeaORM entities (the single schema source of truth, per the
+# generate-migrations rule) + the Postgres connection pool. The `migration` crate
+# derives DDL from these entities; each context's infrastructure adapter queries
+# through them. rustls so no system OpenSSL is required.
+[dependencies]
+sea-orm = { version = "1.1", features = [
+    "sqlx-postgres",
+    "runtime-tokio-rustls",
+    "macros",
+    "with-chrono",
+    "with-uuid",
+] }

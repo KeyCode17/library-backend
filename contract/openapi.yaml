@@ -74,9 +74,17 @@ paths:
           schema:
             type: integer
             format: int32
+        - name: isbn
+          in: query
+          required: false
+          description: >
+            Book-finder filter: narrow to books with this exact ISBN. Lets a
+            client resolve a scanned barcode to a book server-side.
+          schema:
+            type: string
       responses:
         "200":
-          description: A page of books (after any shelf/row filtering).
+          description: A page of books (after any shelf/row/ISBN filtering).
           content:
             application/json:
               schema:

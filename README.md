@@ -14,8 +14,10 @@ derive from (ADR 0004).
   [ADR 0002](docs/adr/0002-hexagonal-clean-architecture-backend.md)). Boots Axum, injects
   concrete adapters into each context, and merges their routers.
 - **`apps/catalog`** — the catalog bounded context (hexagonal:
-  `domain / application / infrastructure / presentation`). Serves the seeded book list via
-  an in-memory repository (the Postgres adapter lands with the DB wiring).
+  `domain / application / infrastructure / presentation`). Lists books with a shelf/row/ISBN
+  finder; persisted in Postgres (see Persistence below).
+- **`apps/persistence`** — shared SeaORM entities (the schema source of truth) + the Postgres
+  connection pool. `migration` derives the DDL from these entities.
 - **`apps/iam`** — auth, roles, permissions (hexagonal). JWT bearer tokens, Argon2id password
   hashing, RBAC (`admin` / `librarian` / `member`). Authorization is enforced server-side in
   the use cases, not just at the edge.
@@ -83,14 +85,30 @@ orchestrator runs it as the cross-repo step; the android repo consumes the AAR.
 
 Secrets are config-driven — nothing is hardcoded or committed.
 
-| Env var              | Purpose                          | Dev fallback if unset                        |
-|----------------------|----------------------------------|----------------------------------------------|
-| `IAM_JWT_SECRET`     | JWT signing secret (HS256)       | ephemeral random secret (warns; not stable)  |
-| `IAM_TOKEN_TTL_SECS` | token lifetime                   | `3600`                                        |
-| `IAM_ADMIN_EMAIL`    | seeded admin email               | `admin@library.local`                         |
-| `IAM_ADMIN_PASSWORD` | seeded admin password (dev seed) | random password generated + printed at boot   |
-| `FCM_PROJECT_ID`     | Firebase project for FCM v1 push | push is a logged no-op                        |
-| `FCM_ACCESS_TOKEN`   | FCM v1 OAuth2 bearer             | push is a logged no-op                        |
+| Env var              | Purpose                          | Dev fallback if unset                                |
+|----------------------|----------------------------------|------------------------------------------------------|
+| `DATABASE_URL`       | Postgres DSN (all contexts)      | `postgres://postgres:postgres@localhost:5432/postgres` |
+| `IAM_JWT_SECRET`     | JWT signing secret (HS256)       | ephemeral random secret (warns; not stable)          |
+| `IAM_TOKEN_TTL_SECS` | token lifetime                   | `3600`                                                |
+| `IAM_ADMIN_EMAIL`    | seeded admin email               | `admin@library.local`                                 |
+| `IAM_ADMIN_PASSWORD` | seeded admin password (dev seed) | random password generated + printed at boot           |
+| `FCM_PROJECT_ID`     | Firebase project for FCM v1 push | push is a logged no-op                                |
+| `FCM_ACCESS_TOKEN`   | FCM v1 OAuth2 bearer             | push is a logged no-op                                |
+
+**Production fails closed:** with `APP_ENV`/`RUST_ENV` = `production`, a missing `DATABASE_URL` or
+`IAM_JWT_SECRET` is fatal (the gateway refuses to start) rather than falling back to a dev default.
+
+## Persistence
+
+Every context persists to **Postgres via SeaORM** (ADR 0003). The schema lives as SeaORM entities
+in `apps/persistence` (the single source of truth); `apps/migration` derives the DDL from them and
+runs at startup. Each context's `infrastructure` has a `SeaOrm*Repository` adapter behind its
+unchanged domain port; the in-memory adapters remain only for the contexts' DB-free unit tests.
+DB-backed integration tests use an ephemeral Postgres via **testcontainers** (Docker required).
+
+Borrow is **atomic**: a single conditional `UPDATE books SET available=false WHERE id=? AND
+available=true` claims the book; concurrent borrows of the same book yield exactly one active loan
+(the loser gets `409`).
 
 Set `IAM_JWT_SECRET` and `IAM_ADMIN_PASSWORD` in any real deployment. With them unset the
 gateway still boots for local dev, logging a warning (and the generated admin password).
@@ -102,10 +120,12 @@ tracked for 0.9, like the JWT secret.
 ## Run
 
 ```bash
+# needs a Postgres (DATABASE_URL); migrations + seed run at startup
 cargo run -p gateway                 # listens on 0.0.0.0:8080 (override with PORT)
 curl localhost:8080/healthz          # -> {"status":"ok"}
 curl 'localhost:8080/books'          # -> { "data": [ ...8 seeded books... ], "pagination": {...} }
 curl 'localhost:8080/books?page=2&page_size=3'   # paginated
+curl 'localhost:8080/books?isbn=978-0132350884'  # resolve a scanned ISBN -> one book
 
 # auth
 curl -X POST localhost:8080/auth/register -H 'content-type: application/json' \

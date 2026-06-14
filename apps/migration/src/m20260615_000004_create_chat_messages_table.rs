@@ -3,7 +3,7 @@
 use sea_orm::Schema;
 use sea_orm_migration::prelude::*;
 
-use crate::entity::chat_message;
+use persistence::entity::chat_message;
 
 #[derive(DeriveMigrationName)]
 pub struct Migration;

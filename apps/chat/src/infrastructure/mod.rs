@@ -2,8 +2,10 @@
 
 pub mod in_memory_messages;
 pub mod room_hub;
+pub mod seaorm_messages;
 pub mod system_clock;
 
 pub use in_memory_messages::InMemoryMessageRepository;
 pub use room_hub::RoomHub;
+pub use seaorm_messages::SeaOrmMessageRepository;
 pub use system_clock::SystemClock;
