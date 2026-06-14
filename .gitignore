@@ -2,3 +2,6 @@
 
 # Rust build artifacts
 /target
+
+# build.sh cross-compile output (recommender AAR + Kotlin bindings)
+/build
