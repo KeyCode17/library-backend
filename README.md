@@ -1,6 +1,6 @@
 # library-backend
 
-Rust/Axum backend for the library project. **v0.2.0 — catalog detail + book-finder (shelf/row).**
+Rust/Axum backend for the library project. **v0.3.0 — IAM: auth, roles, permissions (login/register/session; admin role UI + auth-screen design deferred).**
 
 ## What's built
 
