@@ -1,0 +1,18 @@
+[package]
+name = "migration"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Schema/migration crate (SeaORM). Heavy DB deps live here only — they stay out
+# of the gateway and catalog runtime crates.
+[dependencies]
+sea-orm-migration = { version = "1.1", features = [
+    "runtime-tokio-rustls",
+    "sqlx-postgres",
+] }
+# Direct dep so `DeriveEntityModel`'s generated `sea_orm::` paths resolve. Same
+# 1.1.x as the one re-exported by sea-orm-migration, so it unifies to one version.
+sea-orm = { version = "1.1", features = ["macros"] }
+async-trait = "0.1"
