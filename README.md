@@ -2,29 +2,38 @@
 
 Rust/Axum backend for the library project. **Version 0.1.0.**
 
-## What's built (M0 skeleton)
+## What's built
 
-A booting Cargo workspace with the pre-push quality gate wired. No feature code yet —
-the catalog/contract endpoints land in later milestones (see
-[`docs/plan/001-implementation-plan-backend.md`](docs/plan/001-implementation-plan-backend.md)).
+A booting Cargo workspace with the pre-push quality gate wired and the first feature slice
+(T-001 catalog listing). The API is contract-first: every endpoint is defined in
+[`contract/openapi.yaml`](contract/openapi.yaml), the single source of truth all three repos
+derive from (ADR 0004).
 
 - **Workspace** — `members = ["apps/*"]`, single version line in `[workspace.package]`.
 - **`apps/gateway`** — the composition root (per
-  [ADR 0002](docs/adr/0002-hexagonal-clean-architecture-backend.md)). An Axum server that
-  exposes one route:
+  [ADR 0002](docs/adr/0002-hexagonal-clean-architecture-backend.md)). Boots Axum, injects
+  concrete adapters into each context, and merges their routers.
+- **`apps/catalog`** — the catalog bounded context (hexagonal:
+  `domain / application / infrastructure / presentation`). Serves the seeded book list via
+  an in-memory repository (the Postgres adapter lands with the DB wiring).
+- **`apps/migration`** — SeaORM schema/migrations. The `books` table DDL is generated from
+  the `book` entity (`Schema::create_table_from_entity`), per the generate-migrations rule.
 
-  | Method | Path       | Response                      |
-  |--------|------------|-------------------------------|
-  | `GET`  | `/healthz` | `200 {"status":"ok"}`         |
+  | Method | Path       | Response                                             |
+  |--------|------------|------------------------------------------------------|
+  | `GET`  | `/healthz` | `200 {"status":"ok"}`                                |
+  | `GET`  | `/books`   | `200 { data: Book[], pagination }` — public, no auth |
 
-Feature contexts (`iam`, `catalog`, `lending`, `recommender`) are added as library crates
-under `apps/*` and merged into the gateway router as they come online.
+Remaining contexts (`iam`, `lending`, `recommender`) are added as crates under `apps/*` and
+merged into the gateway router as they come online.
 
 ## Run
 
 ```bash
-cargo run -p gateway          # listens on 0.0.0.0:8080 (override with PORT)
-curl localhost:8080/healthz   # -> {"status":"ok"}
+cargo run -p gateway                 # listens on 0.0.0.0:8080 (override with PORT)
+curl localhost:8080/healthz          # -> {"status":"ok"}
+curl 'localhost:8080/books'          # -> { "data": [ ...8 seeded books... ], "pagination": {...} }
+curl 'localhost:8080/books?page=2&page_size=3'   # paginated
 ```
 
 ## Test
