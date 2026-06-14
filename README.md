@@ -1,6 +1,8 @@
 # library-backend
 
-Rust/Axum backend for the library project. **v0.7.0 — Notifications: due-date scheduler + FCM push.**
+Rust/Axum backend for the library project. **v0.9.0 — Hardening: Postgres persistence, security,
+a11y/perf, expanded tests.** Deployment requires `DATABASE_URL`, `IAM_JWT_SECRET`, and (for push)
+FCM config — all fail-closed in production.
 
 ## What's built
 
