@@ -2,10 +2,12 @@
 
 pub mod book;
 pub mod error;
+pub mod filter;
 pub mod pagination;
 pub mod repository;
 
 pub use book::Book;
 pub use error::RepositoryError;
+pub use filter::BookFilter;
 pub use pagination::{Page, PageRequest};
 pub use repository::BookRepository;

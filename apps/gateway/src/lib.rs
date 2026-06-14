@@ -10,9 +10,10 @@ pub mod presentation;
 use std::sync::Arc;
 
 use axum::Router;
-use catalog::application::ListBooks;
+use catalog::application::{GetBook, ListBooks};
 use catalog::domain::BookRepository;
 use catalog::infrastructure::in_memory::InMemoryBookRepository;
+use catalog::presentation::CatalogState;
 
 /// Build the application router with all contexts composed in.
 ///
@@ -21,11 +22,14 @@ use catalog::infrastructure::in_memory::InMemoryBookRepository;
 /// place that knows the concrete adapter.
 pub fn router() -> Router {
     let book_repository: Arc<dyn BookRepository> = Arc::new(InMemoryBookRepository::seeded());
-    let list_books = Arc::new(ListBooks::new(book_repository));
+    let catalog_state = CatalogState {
+        list_books: Arc::new(ListBooks::new(book_repository.clone())),
+        get_book: Arc::new(GetBook::new(book_repository)),
+    };
 
     Router::new()
         .merge(presentation::health::routes())
-        .merge(catalog::presentation::router(list_books))
+        .merge(catalog::presentation::router(catalog_state))
 }
 
 #[cfg(test)]
