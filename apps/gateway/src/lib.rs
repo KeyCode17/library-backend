@@ -30,7 +30,10 @@ use lending::domain::{BookGateway, Clock, LoanRepository};
 use lending::infrastructure::{InMemoryLoanRepository, SystemClock};
 use lending::presentation::LendingState;
 
+use recommender::Recommender;
+
 use catalog_bridge::CatalogBookGateway;
+use presentation::recommend::RecommendState;
 
 /// Build the application router with all contexts composed in.
 ///
@@ -45,7 +48,17 @@ pub fn router() -> Router {
         .merge(presentation::health::routes())
         .merge(catalog_router(books.clone()))
         .merge(iam::presentation::router(iam_state.clone()))
-        .merge(lending_router(books, iam_state.tokens.clone()))
+        .merge(lending_router(books.clone(), iam_state.tokens.clone()))
+        .merge(recommend_router(books))
+}
+
+/// Public recommendations. Calls the pure `recommender` crate; candidates come
+/// from the request or, when omitted, the catalog.
+fn recommend_router(books: Arc<dyn BookRepository>) -> Router {
+    presentation::recommend::routes(RecommendState {
+        recommender: Arc::new(Recommender::new()),
+        books,
+    })
 }
 
 /// Public, read-only catalog (no auth — deliberately).
@@ -209,5 +222,52 @@ mod tests {
         // Catalog now reflects it as unavailable.
         let (_, after) = call(&app, "GET", &format!("/books/{SEEDED_BOOK}"), None, None).await;
         assert_eq!(after["available"], false);
+    }
+
+    #[tokio::test]
+    async fn recommend_ranks_explicit_candidates_by_preference() {
+        let app = router();
+        let tech = "00000000-0000-4000-8000-0000000000a1";
+        let fiction = "00000000-0000-4000-8000-0000000000a2";
+
+        // Public — no token. Prefer the "Tech" shelf.
+        let (status, body) = call(
+            &app,
+            "POST",
+            "/recommend",
+            None,
+            Some(json!({
+                "preferences": {"preferred_shelves": ["Tech"]},
+                "candidates": [
+                    {"id": fiction, "shelf": "Fiction", "author": "x", "available": true},
+                    {"id": tech, "shelf": "Tech", "author": "y", "available": true}
+                ]
+            })),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        let ranked = body["ranked"].as_array().expect("ranked array");
+        assert_eq!(ranked[0], tech);
+        assert_eq!(ranked[1], fiction);
+    }
+
+    #[tokio::test]
+    async fn recommend_falls_back_to_the_catalog_when_no_candidates_given() {
+        let app = router();
+        let (status, body) = call(
+            &app,
+            "POST",
+            "/recommend",
+            None,
+            Some(json!({"preferences": {"preferred_authors": ["Robert C. Martin"]}})),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        let ranked = body["ranked"].as_array().expect("ranked array");
+        // All eight seeded books are ranked; the Clean Code author is first.
+        assert_eq!(ranked.len(), 8);
+        assert_eq!(ranked[0], "00000000-0000-4000-8000-000000000002");
     }
 }

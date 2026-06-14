@@ -428,6 +428,31 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /recommend:
+    post:
+      operationId: recommend
+      summary: Rank books for a user's preferences
+      description: >
+        Public. Ranks candidate books for the given preferences using the shared
+        decision-tree recommender — the same logic the mobile app runs on-device
+        via the UniFFI binding. Supply `candidates` to rank a specific set, or omit
+        it to rank the server's catalog. No authentication: preferences come from
+        the body, not from stored user data.
+      tags: [recommender]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecommendRequest"
+      responses:
+        "200":
+          description: Ranked candidate ids, best match first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecommendResponse"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -609,3 +634,55 @@ components:
             $ref: "#/components/schemas/Loan"
         pagination:
           $ref: "#/components/schemas/Pagination"
+
+    Preferences:
+      type: object
+      description: What the user likes. Empty arrays mean no preference on that axis.
+      properties:
+        preferred_shelves:
+          type: array
+          items:
+            type: string
+        preferred_authors:
+          type: array
+          items:
+            type: string
+        available_only:
+          type: boolean
+          default: false
+
+    RecommendCandidate:
+      type: object
+      required: [id, shelf, author, available]
+      properties:
+        id:
+          type: string
+          format: uuid
+        shelf:
+          type: string
+        author:
+          type: string
+        available:
+          type: boolean
+
+    RecommendRequest:
+      type: object
+      properties:
+        preferences:
+          $ref: "#/components/schemas/Preferences"
+        candidates:
+          type: array
+          description: Explicit candidates to rank; omit to rank the server catalog.
+          items:
+            $ref: "#/components/schemas/RecommendCandidate"
+
+    RecommendResponse:
+      type: object
+      required: [ranked]
+      properties:
+        ranked:
+          type: array
+          description: Candidate book ids, best match first.
+          items:
+            type: string
+            format: uuid

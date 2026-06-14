@@ -1,0 +1,20 @@
+[package]
+name = "recommender-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Thin UniFFI wrapper over the pure `recommender` crate (ADR 0005). cdylib for
+# the on-device native library; the uniffi-bindgen bin generates the Kotlin/Swift
+# bindings from the built library.
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
+
+[dependencies]
+recommender = { path = "../recommender" }
+uniffi = { version = "0.28", features = ["cli"] }
+uuid = { workspace = true }

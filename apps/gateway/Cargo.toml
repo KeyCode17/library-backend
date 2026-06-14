@@ -23,6 +23,7 @@ async-trait = "0.1"
 catalog = { path = "../catalog" }
 iam = { path = "../iam" }
 lending = { path = "../lending" }
+recommender = { path = "../recommender" }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

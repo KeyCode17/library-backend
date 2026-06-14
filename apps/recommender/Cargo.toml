@@ -1,0 +1,10 @@
+[package]
+name = "recommender"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# PURE logic crate (ADR 0005): decision-tree ranking, sync, no I/O / HTTP / FFI /
+# async. The backend imports this directly; `recommender-ffi` wraps it for mobile.
+[dependencies]
+uuid = { workspace = true }
