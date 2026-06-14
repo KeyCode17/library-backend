@@ -1,10 +1,16 @@
 //! Argon2id password hasher (the default, recommended parameters).
 
 use argon2::password_hash::{Error as PhcError, PasswordHash, SaltString};
-use argon2::{Argon2, PasswordHasher as _, PasswordVerifier as _};
+use argon2::{Algorithm, Argon2, Params, PasswordHasher as _, PasswordVerifier as _, Version};
 use rand_core::OsRng;
 
 use crate::domain::{IamError, PasswordHasher};
+
+// Explicit Argon2id parameters pinned at the OWASP minimum (rather than relying
+// on `Argon2::default()`): 19 MiB memory, 2 iterations, 1 lane.
+const ARGON2_MEMORY_KIB: u32 = 19_456;
+const ARGON2_ITERATIONS: u32 = 2;
+const ARGON2_PARALLELISM: u32 = 1;
 
 /// Hashes and verifies passwords with Argon2id. Salts come from the OS CSPRNG.
 pub struct Argon2PasswordHasher {
@@ -13,8 +19,15 @@ pub struct Argon2PasswordHasher {
 
 impl Argon2PasswordHasher {
     pub fn new() -> Self {
+        let params = Params::new(
+            ARGON2_MEMORY_KIB,
+            ARGON2_ITERATIONS,
+            ARGON2_PARALLELISM,
+            None,
+        )
+        .expect("argon2 params are within valid bounds");
         Self {
-            argon2: Argon2::default(),
+            argon2: Argon2::new(Algorithm::Argon2id, Version::V0x13, params),
         }
     }
 }

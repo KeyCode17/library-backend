@@ -8,11 +8,18 @@ use uuid::Uuid;
 
 use crate::domain::{AuthPrincipal, IamError, IssuedToken, Role, TokenService};
 
+/// Issuer and audience claims, set on every token and validated on every check
+/// (defense-in-depth: a token minted for a different service is rejected).
+const TOKEN_ISSUER: &str = "library-backend";
+const TOKEN_AUDIENCE: &str = "library-app";
+
 /// JWT claims. `sub` is the user id, `role` the wire role string.
 #[derive(Debug, Serialize, Deserialize)]
 struct Claims {
     sub: String,
     role: String,
+    iss: String,
+    aud: String,
     iat: u64,
     exp: u64,
 }
@@ -28,10 +35,13 @@ pub struct JwtTokenService {
 impl JwtTokenService {
     /// Build a service from the raw signing secret and token lifetime.
     pub fn new(secret: &[u8], ttl_secs: u64) -> Self {
+        let mut validation = Validation::new(Algorithm::HS256);
+        validation.set_issuer(&[TOKEN_ISSUER]);
+        validation.set_audience(&[TOKEN_AUDIENCE]);
         Self {
             encoding: EncodingKey::from_secret(secret),
             decoding: DecodingKey::from_secret(secret),
-            validation: Validation::new(Algorithm::HS256),
+            validation,
             ttl_secs,
         }
     }
@@ -43,6 +53,8 @@ impl TokenService for JwtTokenService {
         let claims = Claims {
             sub: principal.user_id.to_string(),
             role: principal.role.as_str().to_owned(),
+            iss: TOKEN_ISSUER.to_owned(),
+            aud: TOKEN_AUDIENCE.to_owned(),
             iat: now,
             exp: now + self.ttl_secs,
         };
