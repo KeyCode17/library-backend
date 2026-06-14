@@ -134,7 +134,7 @@ pub fn router(state: LendingState) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{BookGateway, Clock};
+    use crate::domain::{BookGateway, ClaimOutcome, Clock};
     use crate::infrastructure::in_memory_loans::InMemoryLoanRepository;
     use async_trait::async_trait;
     use axum::body::Body;
@@ -173,8 +173,16 @@ mod tests {
 
     #[async_trait]
     impl BookGateway for FakeBookGateway {
-        async fn is_available(&self, book_id: Uuid) -> Result<Option<bool>, LendingError> {
-            Ok(self.books.read().unwrap().get(&book_id).copied())
+        async fn claim_for_borrow(&self, book_id: Uuid) -> Result<ClaimOutcome, LendingError> {
+            let mut guard = self.books.write().unwrap();
+            match guard.get_mut(&book_id) {
+                None => Ok(ClaimOutcome::NotFound),
+                Some(slot) if !*slot => Ok(ClaimOutcome::Unavailable),
+                Some(slot) => {
+                    *slot = false;
+                    Ok(ClaimOutcome::Claimed)
+                }
+            }
         }
         async fn set_available(&self, book_id: Uuid, available: bool) -> Result<(), LendingError> {
             match self.books.write().unwrap().get_mut(&book_id) {

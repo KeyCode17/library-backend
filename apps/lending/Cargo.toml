@@ -10,6 +10,7 @@ serde.workspace = true
 uuid = { workspace = true }
 chrono = { workspace = true }
 async-trait = "0.1"
+persistence = { path = "../persistence" }
 # Reuses the IAM auth model (AuthPrincipal, RBAC, the bearer extractor + token
 # service port). No dependency on `catalog` — book availability goes through a
 # gateway-owned adapter behind the `BookGateway` port.

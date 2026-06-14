@@ -26,13 +26,26 @@ pub trait LoanRepository: Send + Sync {
     async fn list_active(&self) -> Result<Vec<Loan>, LendingError>;
 }
 
+/// Outcome of an atomic borrow-claim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaimOutcome {
+    /// The book was available and is now claimed for this borrower.
+    Claimed,
+    /// The book exists but was already unavailable.
+    Unavailable,
+    /// No book with this id.
+    NotFound,
+}
+
 /// Port to the catalog's book availability. Abstract so the lending domain does
 /// not depend on `catalog`; the gateway provides the bridging adapter.
 #[async_trait]
 pub trait BookGateway: Send + Sync {
-    /// `Some(available)` for an existing book, `None` if the book does not exist.
-    async fn is_available(&self, book_id: Uuid) -> Result<Option<bool>, LendingError>;
-    /// Flip a book's availability.
+    /// Atomically claim a book for borrowing: it transitions to unavailable iff it
+    /// was available. The single atomic claim (not a separate check-then-set) is
+    /// what makes borrow race-free.
+    async fn claim_for_borrow(&self, book_id: Uuid) -> Result<ClaimOutcome, LendingError>;
+    /// Release a book's availability (on return, or to undo a failed borrow).
     async fn set_available(&self, book_id: Uuid, available: bool) -> Result<(), LendingError>;
 }
 

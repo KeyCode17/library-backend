@@ -9,5 +9,5 @@ pub mod status;
 pub use error::LendingError;
 pub use loan::Loan;
 pub use pagination::{Page, PageRequest};
-pub use ports::{BookGateway, Clock, LoanRepository};
+pub use ports::{BookGateway, ClaimOutcome, Clock, LoanRepository};
 pub use status::LoanStatus;
