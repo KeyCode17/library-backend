@@ -57,13 +57,70 @@ paths:
             minimum: 1
             maximum: 100
             default: 20
+        - name: shelf
+          in: query
+          required: false
+          description: >
+            Book-finder filter: narrow to books on this exact shelf label.
+            Combinable with row and with page/page_size.
+          schema:
+            type: string
+        - name: row
+          in: query
+          required: false
+          description: >
+            Book-finder filter: narrow to books in this exact row. Combinable
+            with shelf and with page/page_size.
+          schema:
+            type: integer
+            format: int32
       responses:
         "200":
-          description: A page of books.
+          description: A page of books (after any shelf/row filtering).
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/BookList"
+        "500":
+          description: Unexpected backend failure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /books/{id}:
+    get:
+      operationId: getBook
+      summary: Get a book by id
+      description: Public book detail. No authentication, no writes.
+      tags: [catalog]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Book id.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The book.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Book"
+        "404":
+          description: No book with this id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Unexpected backend failure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
 components:
   schemas:
@@ -119,3 +176,15 @@ components:
             $ref: "#/components/schemas/Book"
         pagination:
           $ref: "#/components/schemas/Pagination"
+
+    Error:
+      type: object
+      description: Flat error body returned by 4xx/5xx responses.
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Stable machine-readable error code, e.g. "not_found".
+        message:
+          type: string
+          description: Human-readable explanation.
