@@ -1,0 +1,23 @@
+[package]
+name = "chat"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# `ws` enables Axum's WebSocket support (delivery, per ADR 0006).
+axum = { workspace = true, features = ["ws"] }
+tokio = { workspace = true }
+serde.workspace = true
+serde_json = "1"
+uuid = { workspace = true }
+chrono = { workspace = true }
+async-trait = "0.1"
+futures-util = "0.3"
+# Reuses the IAM token service for authenticating the WS upgrade + REST history.
+iam = { path = "../iam" }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+tokio-tungstenite = "0.29"
