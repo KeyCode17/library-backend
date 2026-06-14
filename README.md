@@ -1,6 +1,6 @@
 # library-backend
 
-Rust/Axum backend for the library project. **v0.6.0 — Chat: group chat over WebSocket.**
+Rust/Axum backend for the library project. **v0.7.0 — Notifications: due-date scheduler + FCM push.**
 
 ## What's built
 
