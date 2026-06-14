@@ -24,6 +24,7 @@ catalog = { path = "../catalog" }
 iam = { path = "../iam" }
 lending = { path = "../lending" }
 recommender = { path = "../recommender" }
+chat = { path = "../chat" }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
