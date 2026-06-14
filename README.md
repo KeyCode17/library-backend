@@ -1,6 +1,6 @@
 # library-backend
 
-Rust/Axum backend for the library project. **v0.5.0 — Recommender (pure crate + /recommend; android on-device UniFFI binding).**
+Rust/Axum backend for the library project. **v0.6.0 — Chat: group chat over WebSocket.**
 
 ## What's built
 
