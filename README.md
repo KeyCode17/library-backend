@@ -1,6 +1,6 @@
 # library-backend
 
-Rust/Axum backend for the library project. **v0.4.0 — Lending: borrow/return/due/staff-approve.**
+Rust/Axum backend for the library project. **v0.5.0 — Recommender (pure crate + /recommend; android on-device UniFFI binding).**
 
 ## What's built
 
