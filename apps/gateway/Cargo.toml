@@ -18,9 +18,13 @@ path = "src/main.rs"
 axum.workspace = true
 tokio.workspace = true
 serde.workspace = true
+uuid = { workspace = true }
+async-trait = "0.1"
 catalog = { path = "../catalog" }
 iam = { path = "../iam" }
+lending = { path = "../lending" }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+serde_json = "1"
