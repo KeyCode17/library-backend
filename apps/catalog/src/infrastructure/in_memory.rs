@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use uuid::{uuid, Uuid};
 
-use crate::domain::{Book, BookRepository, Page, PageRequest, RepositoryError};
+use crate::domain::{Book, BookFilter, BookRepository, Page, PageRequest, RepositoryError};
 
 /// In-memory `BookRepository` seeded with a fixed catalog.
 ///
@@ -24,12 +24,20 @@ impl InMemoryBookRepository {
 
 #[async_trait]
 impl BookRepository for InMemoryBookRepository {
-    async fn list(&self, request: PageRequest) -> Result<Page<Book>, RepositoryError> {
-        let total = self.books.len() as u64;
-        let offset = request.offset() as usize;
-        let items = self
+    async fn list(
+        &self,
+        filter: &BookFilter,
+        request: PageRequest,
+    ) -> Result<Page<Book>, RepositoryError> {
+        let matches: Vec<&Book> = self
             .books
             .iter()
+            .filter(|book| filter.matches(book))
+            .collect();
+        let total = matches.len() as u64;
+        let offset = request.offset() as usize;
+        let items = matches
+            .into_iter()
             .skip(offset)
             .take(request.page_size() as usize)
             .cloned()
@@ -41,6 +49,10 @@ impl BookRepository for InMemoryBookRepository {
             page_size: request.page_size(),
             total,
         })
+    }
+
+    async fn find_by_id(&self, id: Uuid) -> Result<Option<Book>, RepositoryError> {
+        Ok(self.books.iter().find(|book| book.id == id).cloned())
     }
 }
 

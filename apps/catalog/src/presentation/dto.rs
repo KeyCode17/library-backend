@@ -61,8 +61,16 @@ impl From<Page<Book>> for BookListResponse {
     }
 }
 
-/// Flat error body (FSD §4): `{ "error": "..." }`.
+/// `Error` schema: a flat `{ code, message }` body for 4xx/5xx responses. One
+/// shared error shape keeps the contract self-consistent (FSD §4).
 #[derive(Debug, Serialize)]
 pub struct ErrorBody {
-    pub error: &'static str,
+    pub code: &'static str,
+    pub message: &'static str,
+}
+
+impl ErrorBody {
+    pub const fn new(code: &'static str, message: &'static str) -> Self {
+        Self { code, message }
+    }
 }
