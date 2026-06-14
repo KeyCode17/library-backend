@@ -1,6 +1,6 @@
 # library-backend
 
-Rust/Axum backend for the library project. **v0.3.0 — IAM: auth, roles, permissions (login/register/session; admin role UI + auth-screen design deferred).**
+Rust/Axum backend for the library project. **v0.4.0 — Lending: borrow/return/due/staff-approve.**
 
 ## What's built
 
