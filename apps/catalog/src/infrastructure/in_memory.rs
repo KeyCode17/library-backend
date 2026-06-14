@@ -1,3 +1,5 @@
+use std::sync::RwLock;
+
 use async_trait::async_trait;
 use uuid::{uuid, Uuid};
 
@@ -5,21 +7,25 @@ use crate::domain::{Book, BookFilter, BookRepository, Page, PageRequest, Reposit
 
 /// In-memory `BookRepository` seeded with a fixed catalog.
 ///
-/// This is the catalog adapter for the T-001 read-only slice; the Postgres/SeaORM
-/// adapter lands with the DB wiring (the books table schema lives in the
-/// `migration` crate). Deterministic ids keep tests stable. Books are returned in
-/// insertion order so pagination is reproducible.
+/// This is the catalog adapter until the Postgres/SeaORM adapter lands (the books
+/// table schema lives in the `migration` crate). Deterministic ids keep tests
+/// stable; books are returned in insertion order so pagination is reproducible.
+/// The store is interior-mutable so the lending context can toggle availability.
 pub struct InMemoryBookRepository {
-    books: Vec<Book>,
+    books: RwLock<Vec<Book>>,
 }
 
 impl InMemoryBookRepository {
     /// Build a repository populated with the seed catalog.
     pub fn seeded() -> Self {
         Self {
-            books: seed_books(),
+            books: RwLock::new(seed_books()),
         }
     }
+}
+
+fn poisoned() -> RepositoryError {
+    RepositoryError::Backend("book store lock poisoned".to_owned())
 }
 
 #[async_trait]
@@ -29,19 +35,19 @@ impl BookRepository for InMemoryBookRepository {
         filter: &BookFilter,
         request: PageRequest,
     ) -> Result<Page<Book>, RepositoryError> {
-        let matches: Vec<&Book> = self
-            .books
-            .iter()
-            .filter(|book| filter.matches(book))
-            .collect();
-        let total = matches.len() as u64;
-        let offset = request.offset() as usize;
-        let items = matches
-            .into_iter()
-            .skip(offset)
-            .take(request.page_size() as usize)
-            .cloned()
-            .collect();
+        let (items, total) = {
+            let guard = self.books.read().map_err(|_| poisoned())?;
+            let matches: Vec<&Book> = guard.iter().filter(|book| filter.matches(book)).collect();
+            let total = matches.len() as u64;
+            let offset = request.offset() as usize;
+            let items: Vec<Book> = matches
+                .into_iter()
+                .skip(offset)
+                .take(request.page_size() as usize)
+                .cloned()
+                .collect();
+            (items, total)
+        };
 
         Ok(Page {
             items,
@@ -52,7 +58,26 @@ impl BookRepository for InMemoryBookRepository {
     }
 
     async fn find_by_id(&self, id: Uuid) -> Result<Option<Book>, RepositoryError> {
-        Ok(self.books.iter().find(|book| book.id == id).cloned())
+        let found = {
+            let guard = self.books.read().map_err(|_| poisoned())?;
+            guard.iter().find(|book| book.id == id).cloned()
+        };
+        Ok(found)
+    }
+
+    async fn set_availability(
+        &self,
+        id: Uuid,
+        available: bool,
+    ) -> Result<Option<Book>, RepositoryError> {
+        let mut guard = self.books.write().map_err(|_| poisoned())?;
+        match guard.iter_mut().find(|book| book.id == id) {
+            Some(book) => {
+                book.available = available;
+                Ok(Some(book.clone()))
+            }
+            None => Ok(None),
+        }
     }
 }
 
