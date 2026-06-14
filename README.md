@@ -23,6 +23,10 @@ derive from (ADR 0004).
   IAM's bearer extractor + RBAC; members act on their own loans, staff approve. Book
   availability is reached through a `BookGateway` port — the gateway bridges it to `catalog`, so
   the contexts stay decoupled while a borrow flips the book unavailable.
+- **`apps/recommender`** — a **pure, sync** decision-tree ranking crate (ADR 0005): no I/O,
+  HTTP, FFI, or async. The gateway calls it directly for `POST /recommend`.
+- **`apps/recommender-ffi`** — a thin UniFFI 0.28 (proc-macro) `cdylib` wrapping `recommender`
+  for Kotlin/Swift. No logic of its own — the server and the phone rank identically.
 - **`apps/migration`** — SeaORM schema/migrations. The `books`, `users`, and `loans` table DDL
   is generated from the entities (`Schema::create_table_from_entity`), per the
   generate-migrations rule.
@@ -40,9 +44,22 @@ derive from (ADR 0004).
   | `GET`  | `/loans`              | bearer | `200 LoanList` (member: own; staff: all)          |
   | `POST` | `/loans/{id}/return`  | bearer | `200 Loan` / `401` / `403` / `404` (owner/staff)  |
   | `POST` | `/loans/{id}/approve` | staff  | `200 Loan` / `401` / `403` / `404` (staff only)   |
+  | `POST` | `/recommend`          | public | `200 { ranked: [uuid] }` (prefs in body)          |
 
   `401` = unauthenticated; `403` = authenticated but lacking the role/ownership. Catalog stays
   public. Borrowing flips a book unavailable; returning flips it back.
+
+## Mobile artifact (`build.sh`)
+
+`./build.sh` cross-compiles `recommender-ffi` to Android (via `cargo ndk`, scoped to that crate
+only) and generates the UniFFI Kotlin bindings. Outputs:
+
+- `build/recommender/recommender.aar` — native libs (`jni/<abi>/librecommender_ffi.so`)
+- `build/recommender/kotlin/` — generated Kotlin bindings (the android module adds these as
+  source; it already provides the JNA dependency UniFFI needs)
+
+It is idempotent and **fails loudly** if `cargo ndk` / the Android NDK is missing. The
+orchestrator runs it as the cross-repo step; the android repo consumes the AAR.
 
 Remaining contexts (`lending`, `recommender`) are added as crates under `apps/*` and merged
 into the gateway router as they come online.
