@@ -1,0 +1,22 @@
+[package]
+name = "iam"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+axum.workspace = true
+serde.workspace = true
+uuid = { workspace = true }
+async-trait = "0.1"
+# Security deps are isolated to this context.
+argon2 = { version = "0.5", features = ["std"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+# Pure-Rust HMAC/SHA backend — no system crypto libs, unambiguous provider.
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
+
+[dev-dependencies]
+tokio.workspace = true
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+serde_json = "1"
