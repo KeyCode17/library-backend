@@ -27,27 +27,37 @@ derive from (ADR 0004).
   HTTP, FFI, or async. The gateway calls it directly for `POST /recommend`.
 - **`apps/recommender-ffi`** — a thin UniFFI 0.28 (proc-macro) `cdylib` wrapping `recommender`
   for Kotlin/Swift. No logic of its own — the server and the phone rank identically.
-- **`apps/migration`** — SeaORM schema/migrations. The `books`, `users`, and `loans` table DDL
-  is generated from the entities (`Schema::create_table_from_entity`), per the
-  generate-migrations rule.
+- **`apps/chat`** — group chat over WebSocket (ADR 0006). History in an in-memory store;
+  live delivery via a per-room broadcast hub. The WS upgrade and REST history both authenticate
+  with the IAM JWT.
+- **`apps/migration`** — SeaORM schema/migrations. The `books`, `users`, `loans`, and
+  `chat_messages` table DDL is generated from the entities (`Schema::create_table_from_entity`),
+  per the generate-migrations rule.
 
-  | Method | Path                  | Auth   | Response                                          |
-  |--------|-----------------------|--------|---------------------------------------------------|
-  | `GET`  | `/healthz`            | public | `200 {"status":"ok"}`                             |
-  | `GET`  | `/books`              | public | `200 { data: Book[], pagination }`                |
-  | `GET`  | `/books/{id}`         | public | `200 Book` / `404`                                |
-  | `POST` | `/auth/register`      | public | `201 Principal` (creates a `member`)              |
-  | `POST` | `/auth/login`         | public | `200 AuthToken` (JWT) / `401`                     |
-  | `GET`  | `/auth/me`            | bearer | `200 Principal` / `401`                           |
-  | `POST` | `/users/{id}/roles`   | admin  | `200 Principal` / `401` / `403` / `404`           |
-  | `POST` | `/loans`              | bearer | `201 Loan` / `401` / `404` / `409` (borrow)       |
-  | `GET`  | `/loans`              | bearer | `200 LoanList` (member: own; staff: all)          |
-  | `POST` | `/loans/{id}/return`  | bearer | `200 Loan` / `401` / `403` / `404` (owner/staff)  |
-  | `POST` | `/loans/{id}/approve` | staff  | `200 Loan` / `401` / `403` / `404` (staff only)   |
-  | `POST` | `/recommend`          | public | `200 { ranked: [uuid] }` (prefs in body)          |
+  | Method | Path                            | Auth   | Response                                          |
+  |--------|---------------------------------|--------|---------------------------------------------------|
+  | `GET`  | `/healthz`                      | public | `200 {"status":"ok"}`                             |
+  | `GET`  | `/books`                        | public | `200 { data: Book[], pagination }`                |
+  | `GET`  | `/books/{id}`                   | public | `200 Book` / `404`                                |
+  | `POST` | `/auth/register`                | public | `201 Principal` (creates a `member`)              |
+  | `POST` | `/auth/login`                   | public | `200 AuthToken` (JWT) / `401`                     |
+  | `GET`  | `/auth/me`                      | bearer | `200 Principal` / `401`                           |
+  | `POST` | `/users/{id}/roles`             | admin  | `200 Principal` / `401` / `403` / `404`           |
+  | `POST` | `/loans`                        | bearer | `201 Loan` / `401` / `404` / `409` (borrow)       |
+  | `GET`  | `/loans`                        | bearer | `200 LoanList` (member: own; staff: all)          |
+  | `POST` | `/loans/{id}/return`            | bearer | `200 Loan` / `401` / `403` / `404` (owner/staff)  |
+  | `POST` | `/loans/{id}/approve`           | staff  | `200 Loan` / `401` / `403` / `404` (staff only)   |
+  | `POST` | `/recommend`                    | public | `200 { ranked: [uuid] }` (prefs in body)          |
+  | `GET`  | `/chat/rooms/{room}/messages`   | bearer | `200 ChatMessageList` / `401`                      |
+  | `GET`  | `/ws/chat?room=&token=`         | token  | WebSocket upgrade (`101`) / `401`                 |
 
   `401` = unauthenticated; `403` = authenticated but lacking the role/ownership. Catalog stays
   public. Borrowing flips a book unavailable; returning flips it back.
+
+  **Chat WS:** connect to `GET /ws/chat?room=<room>&token=<jwt>` (the `token` query param carries
+  the IAM JWT — browsers can't set headers on a WS handshake; `Authorization: Bearer` is also
+  accepted). Send `ChatSend` (`{ body }`) frames; receive `ChatMessage` frames broadcast to every
+  connection in the room. Each message is persisted to history.
 
 ## Mobile artifact (`build.sh`)
 
