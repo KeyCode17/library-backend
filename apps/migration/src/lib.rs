@@ -15,6 +15,7 @@ mod m20260615_000001_create_books_table;
 mod m20260615_000002_create_users_table;
 mod m20260615_000003_create_loans_table;
 mod m20260615_000004_create_chat_messages_table;
+mod m20260615_000005_create_notification_tables;
 
 pub use sea_orm_migration::prelude::*;
 
@@ -28,6 +29,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260615_000002_create_users_table::Migration),
             Box::new(m20260615_000003_create_loans_table::Migration),
             Box::new(m20260615_000004_create_chat_messages_table::Migration),
+            Box::new(m20260615_000005_create_notification_tables::Migration),
         ]
     }
 }
@@ -38,6 +40,6 @@ mod tests {
 
     #[test]
     fn registers_all_table_migrations() {
-        assert_eq!(Migrator::migrations().len(), 4);
+        assert_eq!(Migrator::migrations().len(), 5);
     }
 }

@@ -8,10 +8,14 @@
 pub mod presentation;
 
 mod catalog_bridge;
+mod loan_source_bridge;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
+
+use notification::application::NotificationScheduler;
 
 use catalog::application::{GetBook, ListBooks};
 use catalog::domain::BookRepository;
@@ -33,24 +37,86 @@ use lending::presentation::LendingState;
 use recommender::Recommender;
 
 use catalog_bridge::CatalogBookGateway;
+use loan_source_bridge::LendingLoanSource;
 use presentation::recommend::RecommendState;
 
-/// Build the application router with all contexts composed in.
-///
-/// In-memory adapters stand in for the Postgres adapters for now. The catalog
-/// book store is shared between catalog (reads) and lending (availability writes,
-/// via the bridge), so a borrow is reflected by `GET /books`.
+/// How often the notification scheduler scans loan due dates.
+const SCHEDULER_PERIOD_SECS: u64 = 3600;
+
+/// Build the application router (without spawning background tasks) — used by
+/// tests. The binary uses [`build`] so it can also run the scheduler.
 pub fn router() -> Router {
+    build().0
+}
+
+/// Build the application and the notification scheduler.
+///
+/// In-memory adapters stand in for the Postgres adapters for now. Two stores are
+/// shared across contexts via the composition root: the catalog book store
+/// (catalog reads / lending availability writes) and the lending loan store
+/// (lending writes / the notification scheduler's due-date reads).
+pub fn build() -> (Router, NotificationScheduler) {
     let books: Arc<dyn BookRepository> = Arc::new(InMemoryBookRepository::seeded());
+    let loans: Arc<dyn LoanRepository> = Arc::new(InMemoryLoanRepository::new());
     let iam_state = build_iam_state();
 
-    Router::new()
+    let (notification_router, scheduler) =
+        notification_setup(loans.clone(), iam_state.tokens.clone());
+
+    let router = Router::new()
         .merge(presentation::health::routes())
         .merge(catalog_router(books.clone()))
         .merge(iam::presentation::router(iam_state.clone()))
-        .merge(lending_router(books.clone(), iam_state.tokens.clone()))
+        .merge(lending_router(
+            books.clone(),
+            loans,
+            iam_state.tokens.clone(),
+        ))
         .merge(recommend_router(books))
         .merge(chat_router(iam_state.tokens.clone()))
+        .merge(notification_router);
+
+    (router, scheduler)
+}
+
+/// Notification: device registry + reminder history (REST) plus the background
+/// due-date scheduler. The real FCM sender is credential-gated (no-op when
+/// `FCM_*` is unset); the scheduler reads active loans through the lending bridge.
+fn notification_setup(
+    loans: Arc<dyn LoanRepository>,
+    tokens: Arc<dyn TokenService>,
+) -> (Router, NotificationScheduler) {
+    use notification::application::{ListNotifications, RegisterDevice, RunReminderScan};
+    use notification::domain::Clock as NotificationClock;
+    use notification::domain::{DeviceRepository, PushSender, ReminderRepository};
+    use notification::infrastructure::{
+        FcmPushSender, InMemoryDeviceRepository, InMemoryReminderRepository,
+        SystemClock as NotificationClockImpl,
+    };
+    use notification::presentation::NotificationState;
+
+    let devices: Arc<dyn DeviceRepository> = Arc::new(InMemoryDeviceRepository::new());
+    let reminders: Arc<dyn ReminderRepository> = Arc::new(InMemoryReminderRepository::new());
+    let push: Arc<dyn PushSender> = Arc::new(FcmPushSender::from_env());
+    let clock: Arc<dyn NotificationClock> = Arc::new(NotificationClockImpl);
+    let loan_source = Arc::new(LendingLoanSource::new(loans));
+
+    let scan = Arc::new(RunReminderScan::new(
+        loan_source,
+        reminders.clone(),
+        devices.clone(),
+        push,
+    ));
+
+    let state = NotificationState {
+        register_device: Arc::new(RegisterDevice::new(devices, clock.clone())),
+        list_notifications: Arc::new(ListNotifications::new(reminders)),
+        tokens,
+    };
+
+    let scheduler =
+        NotificationScheduler::new(scan, clock, Duration::from_secs(SCHEDULER_PERIOD_SECS));
+    (notification::presentation::router(state), scheduler)
 }
 
 /// Chat: group chat over WebSocket (ADR 0006). History in memory; live delivery
@@ -121,9 +187,13 @@ fn build_iam_state() -> IamState {
 }
 
 /// Lending: the loan lifecycle. All routes require a bearer token; the bridge
-/// connects loans to catalog book availability.
-fn lending_router(books: Arc<dyn BookRepository>, tokens: Arc<dyn TokenService>) -> Router {
-    let loans: Arc<dyn LoanRepository> = Arc::new(InMemoryLoanRepository::new());
+/// connects loans to catalog book availability. The loan store is provided by the
+/// composition root so the notification scheduler shares it.
+fn lending_router(
+    books: Arc<dyn BookRepository>,
+    loans: Arc<dyn LoanRepository>,
+    tokens: Arc<dyn TokenService>,
+) -> Router {
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let book_gateway: Arc<dyn BookGateway> = Arc::new(CatalogBookGateway::new(books));
 

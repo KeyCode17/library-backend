@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use async_trait::async_trait;
 
-use crate::domain::{LendingError, Loan, LoanRepository, Page, PageRequest};
+use crate::domain::{LendingError, Loan, LoanRepository, LoanStatus, Page, PageRequest};
 
 pub struct InMemoryLoanRepository {
     loans: RwLock<Vec<Loan>>,
@@ -103,5 +103,17 @@ impl LoanRepository for InMemoryLoanRepository {
                 .collect()
         };
         Ok(paginate(mine, request))
+    }
+
+    async fn list_active(&self) -> Result<Vec<Loan>, LendingError> {
+        let active = {
+            let guard = self.loans.read().map_err(|_| poisoned())?;
+            guard
+                .iter()
+                .filter(|loan| loan.status == LoanStatus::Borrowed)
+                .cloned()
+                .collect()
+        };
+        Ok(active)
     }
 }

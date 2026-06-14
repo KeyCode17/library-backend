@@ -21,6 +21,9 @@ pub trait LoanRepository: Send + Sync {
         user_id: Uuid,
         request: PageRequest,
     ) -> Result<Page<Loan>, LendingError>;
+    /// All currently-borrowed (active) loans, for due-date scanning. Consumed by
+    /// the notification scheduler through a gateway-owned bridge.
+    async fn list_active(&self) -> Result<Vec<Loan>, LendingError>;
 }
 
 /// Port to the catalog's book availability. Abstract so the lending domain does
