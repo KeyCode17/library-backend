@@ -1,0 +1,22 @@
+[package]
+name = "lending"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+axum.workspace = true
+serde.workspace = true
+uuid = { workspace = true }
+chrono = { workspace = true }
+async-trait = "0.1"
+# Reuses the IAM auth model (AuthPrincipal, RBAC, the bearer extractor + token
+# service port). No dependency on `catalog` — book availability goes through a
+# gateway-owned adapter behind the `BookGateway` port.
+iam = { path = "../iam" }
+
+[dev-dependencies]
+tokio.workspace = true
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+serde_json = "1"
