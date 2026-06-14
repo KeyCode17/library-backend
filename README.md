@@ -30,9 +30,14 @@ derive from (ADR 0004).
 - **`apps/chat`** — group chat over WebSocket (ADR 0006). History in an in-memory store;
   live delivery via a per-room broadcast hub. The WS upgrade and REST history both authenticate
   with the IAM JWT.
-- **`apps/migration`** — SeaORM schema/migrations. The `books`, `users`, `loans`, and
-  `chat_messages` table DDL is generated from the entities (`Schema::create_table_from_entity`),
-  per the generate-migrations rule.
+- **`apps/notification`** — due-date reminders pushed via FCM (ADR 0006). A background scheduler
+  (tokio interval) scans active-loan due dates and produces due-soon/overdue reminders, pushing
+  through a `PushSender` port. The real FCM (HTTP v1) adapter is credential-gated; a fake records
+  pushes in tests. The scheduler reads loans via a `LoanSource` port the gateway bridges to
+  `lending`, keeping the contexts decoupled.
+- **`apps/migration`** — SeaORM schema/migrations. The `books`, `users`, `loans`, `chat_messages`,
+  `devices`, and `reminders` table DDL is generated from the entities
+  (`Schema::create_table_from_entity`), per the generate-migrations rule.
 
   | Method | Path                            | Auth   | Response                                          |
   |--------|---------------------------------|--------|---------------------------------------------------|
@@ -50,9 +55,12 @@ derive from (ADR 0004).
   | `POST` | `/recommend`                    | public | `200 { ranked: [uuid] }` (prefs in body)          |
   | `GET`  | `/chat/rooms/{room}/messages`   | bearer | `200 ChatMessageList` / `401`                      |
   | `GET`  | `/ws/chat?room=&token=`         | token  | WebSocket upgrade (`101`) / `401`                 |
+  | `POST` | `/notifications/devices`        | bearer | `201 Device` / `400` / `401` (register FCM token) |
+  | `GET`  | `/notifications`                | bearer | `200 NotificationList` / `401` (reminder history) |
 
   `401` = unauthenticated; `403` = authenticated but lacking the role/ownership. Catalog stays
-  public. Borrowing flips a book unavailable; returning flips it back.
+  public. Borrowing flips a book unavailable; returning flips it back. The due-date scheduler is
+  internal (no endpoint) — it runs on a tokio interval and pushes reminders via FCM.
 
   **Chat WS:** connect to `GET /ws/chat?room=<room>&token=<jwt>` (the `token` query param carries
   the IAM JWT — browsers can't set headers on a WS handshake; `Authorization: Bearer` is also
@@ -71,10 +79,7 @@ only) and generates the UniFFI Kotlin bindings. Outputs:
 It is idempotent and **fails loudly** if `cargo ndk` / the Android NDK is missing. The
 orchestrator runs it as the cross-repo step; the android repo consumes the AAR.
 
-Remaining contexts (`lending`, `recommender`) are added as crates under `apps/*` and merged
-into the gateway router as they come online.
-
-## Configuration (IAM)
+## Configuration
 
 Secrets are config-driven — nothing is hardcoded or committed.
 
@@ -84,9 +89,15 @@ Secrets are config-driven — nothing is hardcoded or committed.
 | `IAM_TOKEN_TTL_SECS` | token lifetime                   | `3600`                                        |
 | `IAM_ADMIN_EMAIL`    | seeded admin email               | `admin@library.local`                         |
 | `IAM_ADMIN_PASSWORD` | seeded admin password (dev seed) | random password generated + printed at boot   |
+| `FCM_PROJECT_ID`     | Firebase project for FCM v1 push | push is a logged no-op                        |
+| `FCM_ACCESS_TOKEN`   | FCM v1 OAuth2 bearer             | push is a logged no-op                        |
 
 Set `IAM_JWT_SECRET` and `IAM_ADMIN_PASSWORD` in any real deployment. With them unset the
 gateway still boots for local dev, logging a warning (and the generated admin password).
+
+When `FCM_*` is unset the notification scheduler still runs but pushes no-op (logged). Real FCM
+delivery needs a Firebase service account to mint `FCM_ACCESS_TOKEN` — a deployment concern
+tracked for 0.9, like the JWT secret.
 
 ## Run
 
