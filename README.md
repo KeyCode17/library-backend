@@ -1,6 +1,6 @@
 # library-backend
 
-Rust/Axum backend for the library project. **Version 0.1.0.**
+Rust/Axum backend for the library project. **v0.1.0 — catalog list (GET /books) shipped.**
 
 ## What's built
 
