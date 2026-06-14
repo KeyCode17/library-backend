@@ -249,6 +249,185 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /loans:
+    get:
+      operationId: listLoans
+      summary: List loans
+      description: >
+        A member sees only their own loans; staff (librarian/admin) see all loans.
+      tags: [lending]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            default: 1
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: A page of loans.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoanList"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      operationId: borrowBook
+      summary: Borrow a book
+      description: >
+        Opens an active loan and flips the book unavailable. Any authenticated
+        user may borrow an available book.
+      tags: [lending]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BorrowRequest"
+      responses:
+        "201":
+          description: The created loan.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Loan"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such book.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: The book is not available to borrow.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /loans/{id}/return:
+    post:
+      operationId: returnLoan
+      summary: Return a borrowed book
+      description: >
+        The borrower returns their own loan; staff may return any. Flips the book
+        available again.
+      tags: [lending]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Loan id.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The returned loan.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Loan"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Not the owner and not staff.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such loan.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: The loan is not in a returnable state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /loans/{id}/approve:
+    post:
+      operationId: approveLoan
+      summary: Approve a returned loan (staff only)
+      description: Staff confirm a returned loan, closing it. Members are forbidden.
+      tags: [lending]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Loan id.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The approved loan.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Loan"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Authenticated but not staff.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such loan.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: The loan is not awaiting approval.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -373,3 +552,60 @@ components:
       properties:
         role:
           $ref: "#/components/schemas/Role"
+
+    LoanStatus:
+      type: string
+      description: >
+        Loan lifecycle status. `borrowed` → `returned` → `approved`. Overdue is
+        derived from `due_at`, not a stored status.
+      enum: [borrowed, returned, approved]
+
+    BorrowRequest:
+      type: object
+      required: [book_id]
+      properties:
+        book_id:
+          type: string
+          format: uuid
+
+    Loan:
+      type: object
+      required: [id, book_id, user_id, status, borrowed_at, due_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        book_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        status:
+          $ref: "#/components/schemas/LoanStatus"
+        borrowed_at:
+          type: string
+          format: date-time
+        due_at:
+          type: string
+          format: date-time
+        returned_at:
+          type: [string, "null"]
+          format: date-time
+        approved_by:
+          type: [string, "null"]
+          format: uuid
+        approved_at:
+          type: [string, "null"]
+          format: date-time
+
+    LoanList:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Loan"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
