@@ -50,6 +50,29 @@ pub fn router() -> Router {
         .merge(iam::presentation::router(iam_state.clone()))
         .merge(lending_router(books.clone(), iam_state.tokens.clone()))
         .merge(recommend_router(books))
+        .merge(chat_router(iam_state.tokens.clone()))
+}
+
+/// Chat: group chat over WebSocket (ADR 0006). History in memory; live delivery
+/// via the room hub. Auth reuses the IAM token service.
+fn chat_router(tokens: Arc<dyn TokenService>) -> Router {
+    let messages: Arc<dyn chat::domain::MessageRepository> =
+        Arc::new(chat::infrastructure::InMemoryMessageRepository::new());
+    let hub = Arc::new(chat::infrastructure::RoomHub::new());
+    let broadcaster: Arc<dyn chat::domain::MessageBroadcaster> = hub.clone();
+    let clock: Arc<dyn chat::domain::Clock> = Arc::new(chat::infrastructure::SystemClock);
+
+    let state = chat::presentation::ChatState {
+        post_message: Arc::new(chat::application::PostMessage::new(
+            messages.clone(),
+            broadcaster,
+            clock,
+        )),
+        history: Arc::new(chat::application::ListHistory::new(messages)),
+        hub,
+        tokens,
+    };
+    chat::presentation::router(state)
 }
 
 /// Public recommendations. Calls the pure `recommender` crate; candidates come

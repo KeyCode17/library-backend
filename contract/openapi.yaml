@@ -453,6 +453,103 @@ paths:
               schema:
                 $ref: "#/components/schemas/RecommendResponse"
 
+  /chat/rooms/{room}/messages:
+    get:
+      operationId: chatHistory
+      summary: Room message history
+      description: >
+        Paginated chat history for a room (oldest first). Any authenticated user
+        may read a room (group chat).
+      tags: [chat]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: room
+          in: path
+          required: true
+          description: Room key (an event id, a book category, or "ask-a-librarian").
+          schema:
+            type: string
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            default: 1
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        "200":
+          description: A page of messages.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatMessageList"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /ws/chat:
+    get:
+      operationId: chatWebSocket
+      summary: Group chat WebSocket (upgrade)
+      description: >
+        WebSocket endpoint for live group chat (ADR 0006). OpenAPI cannot model the
+        stream itself, so the protocol is documented here; frontends derive the
+        chat DTOs from `ChatSend` and `ChatMessage` below.
+
+
+        Connect: `GET /ws/chat?room=<room>&token=<jwt>` with the standard
+        `Upgrade: websocket` headers. Auth: the `token` query param carries the IAM
+        JWT (browsers cannot set headers on a WS handshake); `Authorization: Bearer
+        <jwt>` is also accepted. Unauthenticated upgrades are rejected with `401`
+        before the protocol switch.
+
+
+        Client → server frames: JSON matching `ChatSend` (`{ body }`). Each is
+        persisted to history and broadcast to every connection in the same room.
+
+
+        Server → client frames: JSON matching `ChatMessage`. Past history is read
+        over REST via `GET /chat/rooms/{room}/messages`.
+      tags: [chat]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: room
+          in: query
+          required: true
+          description: Room key to join.
+          schema:
+            type: string
+        - name: token
+          in: query
+          required: false
+          description: IAM JWT (the browser-friendly alternative to the Authorization header).
+          schema:
+            type: string
+      responses:
+        "101":
+          description: Switching Protocols — the WebSocket is established.
+        "401":
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -686,3 +783,41 @@ components:
           items:
             type: string
             format: uuid
+
+    ChatMessage:
+      type: object
+      description: A stored/broadcast chat message (server → client).
+      required: [id, room, user_id, body, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        room:
+          type: string
+        user_id:
+          type: string
+          format: uuid
+        body:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    ChatSend:
+      type: object
+      description: A message the client sends over the socket (client → server).
+      required: [body]
+      properties:
+        body:
+          type: string
+
+    ChatMessageList:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChatMessage"
+        pagination:
+          $ref: "#/components/schemas/Pagination"

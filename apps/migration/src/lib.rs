@@ -14,6 +14,7 @@ pub mod entity;
 mod m20260615_000001_create_books_table;
 mod m20260615_000002_create_users_table;
 mod m20260615_000003_create_loans_table;
+mod m20260615_000004_create_chat_messages_table;
 
 pub use sea_orm_migration::prelude::*;
 
@@ -26,6 +27,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260615_000001_create_books_table::Migration),
             Box::new(m20260615_000002_create_users_table::Migration),
             Box::new(m20260615_000003_create_loans_table::Migration),
+            Box::new(m20260615_000004_create_chat_messages_table::Migration),
         ]
     }
 }
@@ -35,7 +37,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registers_the_books_users_and_loans_migrations() {
-        assert_eq!(Migrator::migrations().len(), 3);
+    fn registers_all_table_migrations() {
+        assert_eq!(Migrator::migrations().len(), 4);
     }
 }
