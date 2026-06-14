@@ -12,6 +12,7 @@
 
 pub mod entity;
 mod m20260615_000001_create_books_table;
+mod m20260615_000002_create_users_table;
 
 pub use sea_orm_migration::prelude::*;
 
@@ -20,7 +21,10 @@ pub struct Migrator;
 
 impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-        vec![Box::new(m20260615_000001_create_books_table::Migration)]
+        vec![
+            Box::new(m20260615_000001_create_books_table::Migration),
+            Box::new(m20260615_000002_create_users_table::Migration),
+        ]
     }
 }
 
@@ -29,7 +33,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registers_the_books_table_migration() {
-        assert_eq!(Migrator::migrations().len(), 1);
+    fn registers_the_books_and_users_migrations() {
+        assert_eq!(Migrator::migrations().len(), 2);
     }
 }

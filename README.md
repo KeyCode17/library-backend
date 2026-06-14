@@ -16,16 +16,41 @@ derive from (ADR 0004).
 - **`apps/catalog`** — the catalog bounded context (hexagonal:
   `domain / application / infrastructure / presentation`). Serves the seeded book list via
   an in-memory repository (the Postgres adapter lands with the DB wiring).
-- **`apps/migration`** — SeaORM schema/migrations. The `books` table DDL is generated from
-  the `book` entity (`Schema::create_table_from_entity`), per the generate-migrations rule.
+- **`apps/iam`** — auth, roles, permissions (hexagonal). JWT bearer tokens, Argon2id password
+  hashing, RBAC (`admin` / `librarian` / `member`). Authorization is enforced server-side in
+  the use cases, not just at the edge.
+- **`apps/migration`** — SeaORM schema/migrations. The `books` and `users` table DDL is
+  generated from the entities (`Schema::create_table_from_entity`), per the generate-migrations
+  rule.
 
-  | Method | Path       | Response                                             |
-  |--------|------------|------------------------------------------------------|
-  | `GET`  | `/healthz` | `200 {"status":"ok"}`                                |
-  | `GET`  | `/books`   | `200 { data: Book[], pagination }` — public, no auth |
+  | Method | Path                | Auth   | Response                                             |
+  |--------|---------------------|--------|------------------------------------------------------|
+  | `GET`  | `/healthz`          | public | `200 {"status":"ok"}`                                |
+  | `GET`  | `/books`            | public | `200 { data: Book[], pagination }`                   |
+  | `GET`  | `/books/{id}`       | public | `200 Book` / `404`                                   |
+  | `POST` | `/auth/register`    | public | `201 Principal` (creates a `member`)                 |
+  | `POST` | `/auth/login`       | public | `200 AuthToken` (JWT) / `401`                        |
+  | `GET`  | `/auth/me`          | bearer | `200 Principal` / `401`                              |
+  | `POST` | `/users/{id}/roles` | admin  | `200 Principal` / `401` / `403` / `404`              |
 
-Remaining contexts (`iam`, `lending`, `recommender`) are added as crates under `apps/*` and
-merged into the gateway router as they come online.
+  `401` = unauthenticated; `403` = authenticated but lacking the role. Catalog stays public.
+
+Remaining contexts (`lending`, `recommender`) are added as crates under `apps/*` and merged
+into the gateway router as they come online.
+
+## Configuration (IAM)
+
+Secrets are config-driven — nothing is hardcoded or committed.
+
+| Env var              | Purpose                          | Dev fallback if unset                        |
+|----------------------|----------------------------------|----------------------------------------------|
+| `IAM_JWT_SECRET`     | JWT signing secret (HS256)       | ephemeral random secret (warns; not stable)  |
+| `IAM_TOKEN_TTL_SECS` | token lifetime                   | `3600`                                        |
+| `IAM_ADMIN_EMAIL`    | seeded admin email               | `admin@library.local`                         |
+| `IAM_ADMIN_PASSWORD` | seeded admin password (dev seed) | random password generated + printed at boot   |
+
+Set `IAM_JWT_SECRET` and `IAM_ADMIN_PASSWORD` in any real deployment. With them unset the
+gateway still boots for local dev, logging a warning (and the generated admin password).
 
 ## Run
 
@@ -34,6 +59,13 @@ cargo run -p gateway                 # listens on 0.0.0.0:8080 (override with PO
 curl localhost:8080/healthz          # -> {"status":"ok"}
 curl 'localhost:8080/books'          # -> { "data": [ ...8 seeded books... ], "pagination": {...} }
 curl 'localhost:8080/books?page=2&page_size=3'   # paginated
+
+# auth
+curl -X POST localhost:8080/auth/register -H 'content-type: application/json' \
+  -d '{"email":"a@b.com","password":"password123"}'                 # -> 201 member
+TOKEN=$(curl -s -X POST localhost:8080/auth/login -H 'content-type: application/json' \
+  -d '{"email":"a@b.com","password":"password123"}' | jq -r .token)
+curl localhost:8080/auth/me -H "authorization: Bearer $TOKEN"        # -> current principal
 ```
 
 ## Test
