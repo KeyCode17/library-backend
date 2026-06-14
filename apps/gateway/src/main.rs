@@ -13,6 +13,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     println!("gateway listening on {addr}");
 
-    axum::serve(listener, gateway::router()).await?;
+    // Compose the app and run the notification due-date scheduler alongside it.
+    let (app, scheduler) = gateway::build();
+    tokio::spawn(scheduler.run());
+
+    axum::serve(listener, app).await?;
     Ok(())
 }
