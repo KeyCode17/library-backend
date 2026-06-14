@@ -19,21 +19,30 @@ derive from (ADR 0004).
 - **`apps/iam`** — auth, roles, permissions (hexagonal). JWT bearer tokens, Argon2id password
   hashing, RBAC (`admin` / `librarian` / `member`). Authorization is enforced server-side in
   the use cases, not just at the edge.
-- **`apps/migration`** — SeaORM schema/migrations. The `books` and `users` table DDL is
-  generated from the entities (`Schema::create_table_from_entity`), per the generate-migrations
-  rule.
+- **`apps/lending`** — the loan lifecycle (`borrowed → returned → approved`, hexagonal). Reuses
+  IAM's bearer extractor + RBAC; members act on their own loans, staff approve. Book
+  availability is reached through a `BookGateway` port — the gateway bridges it to `catalog`, so
+  the contexts stay decoupled while a borrow flips the book unavailable.
+- **`apps/migration`** — SeaORM schema/migrations. The `books`, `users`, and `loans` table DDL
+  is generated from the entities (`Schema::create_table_from_entity`), per the
+  generate-migrations rule.
 
-  | Method | Path                | Auth   | Response                                             |
-  |--------|---------------------|--------|------------------------------------------------------|
-  | `GET`  | `/healthz`          | public | `200 {"status":"ok"}`                                |
-  | `GET`  | `/books`            | public | `200 { data: Book[], pagination }`                   |
-  | `GET`  | `/books/{id}`       | public | `200 Book` / `404`                                   |
-  | `POST` | `/auth/register`    | public | `201 Principal` (creates a `member`)                 |
-  | `POST` | `/auth/login`       | public | `200 AuthToken` (JWT) / `401`                        |
-  | `GET`  | `/auth/me`          | bearer | `200 Principal` / `401`                              |
-  | `POST` | `/users/{id}/roles` | admin  | `200 Principal` / `401` / `403` / `404`              |
+  | Method | Path                  | Auth   | Response                                          |
+  |--------|-----------------------|--------|---------------------------------------------------|
+  | `GET`  | `/healthz`            | public | `200 {"status":"ok"}`                             |
+  | `GET`  | `/books`              | public | `200 { data: Book[], pagination }`                |
+  | `GET`  | `/books/{id}`         | public | `200 Book` / `404`                                |
+  | `POST` | `/auth/register`      | public | `201 Principal` (creates a `member`)              |
+  | `POST` | `/auth/login`         | public | `200 AuthToken` (JWT) / `401`                     |
+  | `GET`  | `/auth/me`            | bearer | `200 Principal` / `401`                           |
+  | `POST` | `/users/{id}/roles`   | admin  | `200 Principal` / `401` / `403` / `404`           |
+  | `POST` | `/loans`              | bearer | `201 Loan` / `401` / `404` / `409` (borrow)       |
+  | `GET`  | `/loans`              | bearer | `200 LoanList` (member: own; staff: all)          |
+  | `POST` | `/loans/{id}/return`  | bearer | `200 Loan` / `401` / `403` / `404` (owner/staff)  |
+  | `POST` | `/loans/{id}/approve` | staff  | `200 Loan` / `401` / `403` / `404` (staff only)   |
 
-  `401` = unauthenticated; `403` = authenticated but lacking the role. Catalog stays public.
+  `401` = unauthenticated; `403` = authenticated but lacking the role/ownership. Catalog stays
+  public. Borrowing flips a book unavailable; returning flips it back.
 
 Remaining contexts (`lending`, `recommender`) are added as crates under `apps/*` and merged
 into the gateway router as they come online.

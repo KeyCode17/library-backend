@@ -26,20 +26,31 @@ pub struct IamState {
     pub tokens: Arc<dyn TokenService>,
 }
 
+/// Lets the bearer extractor pull just the token service out of `IamState`.
+impl FromRef<IamState> for Arc<dyn TokenService> {
+    fn from_ref(state: &IamState) -> Self {
+        state.tokens.clone()
+    }
+}
+
 /// Extractor that proves the caller presented a valid bearer token. Its presence
 /// in a handler signature is what makes an endpoint require authentication;
 /// absence/invalidity yields `401` before the handler runs.
+///
+/// It depends only on `Arc<dyn TokenService>` (via `FromRef`), so any context's
+/// router state can reuse it by exposing the token service — it does not need the
+/// whole `IamState`.
 pub struct AuthenticatedUser(pub AuthPrincipal);
 
 impl<S> FromRequestParts<S> for AuthenticatedUser
 where
     S: Send + Sync,
-    IamState: FromRef<S>,
+    Arc<dyn TokenService>: FromRef<S>,
 {
     type Rejection = Response;
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let iam = IamState::from_ref(state);
+        let tokens = Arc::<dyn TokenService>::from_ref(state);
 
         let token = parts
             .headers
@@ -50,7 +61,7 @@ where
             .filter(|token| !token.is_empty())
             .ok_or_else(unauthorized)?;
 
-        let principal = iam.tokens.verify(token).map_err(|_| unauthorized())?;
+        let principal = tokens.verify(token).map_err(|_| unauthorized())?;
         Ok(AuthenticatedUser(principal))
     }
 }
