@@ -18,6 +18,7 @@ path = "src/main.rs"
 axum.workspace = true
 tokio.workspace = true
 serde.workspace = true
+catalog = { path = "../catalog" }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
