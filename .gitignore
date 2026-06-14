@@ -1,1 +1,4 @@
 .claude/
+
+# Rust build artifacts
+/target
