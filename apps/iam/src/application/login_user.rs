@@ -38,14 +38,18 @@ impl LoginUser {
             return Err(IamError::InvalidCredentials);
         };
 
-        if self.hasher.verify(password, &user.password_hash)? {
-            let principal = AuthPrincipal {
-                user_id: user.id,
-                role: user.role,
-            };
-            self.tokens.issue(&principal)
-        } else {
-            Err(IamError::InvalidCredentials)
+        if !self.hasher.verify(password, &user.password_hash)? {
+            return Err(IamError::InvalidCredentials);
         }
+        // Deactivated accounts cannot log in — reported generically, not revealed.
+        if !user.active {
+            return Err(IamError::InvalidCredentials);
+        }
+
+        let principal = AuthPrincipal {
+            user_id: user.id,
+            role: user.role,
+        };
+        self.tokens.issue(&principal)
     }
 }

@@ -23,9 +23,18 @@ use catalog::domain::BookRepository;
 use catalog::infrastructure::SeaOrmBookRepository;
 use catalog::presentation::CatalogState;
 
-use iam::application::{AssignRole, GetCurrentUser, LoginUser, RegisterUser};
-use iam::domain::{PasswordHasher, TokenService, UserRepository};
-use iam::infrastructure::{Argon2PasswordHasher, IamConfig, JwtTokenService, SeaOrmUserRepository};
+use iam::application::{
+    AssignRole, ChangePassword, CreateUser, DeleteMe, DeleteUser, ForgotPassword, GetCurrentUser,
+    ListUsers, LoginUser, RegisterUser, ResetPassword, UpdateMe, UpdateUser, VerifyEmail,
+};
+use iam::domain::{
+    Clock as IamClock, EmailSender, EmailTokenRepository, PasswordHasher, TokenGenerator,
+    TokenService, UserRepository,
+};
+use iam::infrastructure::{
+    Argon2PasswordHasher, IamConfig, JwtTokenService, RandomTokenGenerator,
+    SeaOrmEmailTokenRepository, SeaOrmUserRepository, SystemClock as IamClockImpl,
+};
 use iam::presentation::IamState;
 
 use lending::application::{ApproveLoan, BorrowBook, ListLoans, ReturnLoan};
@@ -62,12 +71,15 @@ pub async fn migrate(db: &DatabaseConnection) -> Result<(), DbErr> {
 ///
 /// Seeds the catalog and the admin user idempotently, then wires the SeaORM
 /// adapters into every context.
-pub async fn build(db: DatabaseConnection) -> (Router, NotificationScheduler) {
+pub async fn build(
+    db: DatabaseConnection,
+    email_sender: Arc<dyn EmailSender>,
+) -> (Router, NotificationScheduler) {
     catalog::infrastructure::seed::seed_books_if_empty(&db)
         .await
         .expect("seed catalog");
 
-    let iam_state = build_iam_state(db.clone()).await;
+    let iam_state = build_iam_state(db.clone(), email_sender).await;
 
     let books: Arc<dyn BookRepository> = Arc::new(SeaOrmBookRepository::new(db.clone()));
     let loans: Arc<dyn LoanRepository> = Arc::new(SeaOrmLoanRepository::new(db.clone()));
@@ -100,27 +112,67 @@ fn catalog_router(books: Arc<dyn BookRepository>) -> Router {
     catalog::presentation::router(state)
 }
 
-/// IAM: auth + RBAC, persisted in Postgres. Secrets come from config/env; the
-/// admin is seeded idempotently.
-async fn build_iam_state(db: DatabaseConnection) -> IamState {
+/// IAM: auth + RBAC + user management + email flows, persisted in Postgres.
+/// Secrets come from config/env; the admin is seeded idempotently.
+async fn build_iam_state(db: DatabaseConnection, email_sender: Arc<dyn EmailSender>) -> IamState {
     let config = IamConfig::from_env();
     let hasher: Arc<dyn PasswordHasher> = Arc::new(Argon2PasswordHasher::new());
     let tokens: Arc<dyn TokenService> = Arc::new(JwtTokenService::new(
         &config.jwt_secret,
         config.token_ttl_secs,
     ));
-    let users: Arc<dyn UserRepository> = Arc::new(SeaOrmUserRepository::new(db));
+    let users: Arc<dyn UserRepository> = Arc::new(SeaOrmUserRepository::new(db.clone()));
+    let email_tokens: Arc<dyn EmailTokenRepository> = Arc::new(SeaOrmEmailTokenRepository::new(db));
+    let token_generator: Arc<dyn TokenGenerator> = Arc::new(RandomTokenGenerator::new());
+    let clock: Arc<dyn IamClock> = Arc::new(IamClockImpl);
+    let base_url = config.public_base_url.clone();
 
     seed_admin(users.as_ref(), hasher.as_ref(), &config).await;
 
     IamState {
-        register: Arc::new(RegisterUser::new(users.clone(), hasher.clone())),
+        register: Arc::new(RegisterUser::new(
+            users.clone(),
+            hasher.clone(),
+            clock.clone(),
+            email_tokens.clone(),
+            token_generator.clone(),
+            email_sender.clone(),
+            base_url.clone(),
+        )),
         login: Arc::new(LoginUser::new(
             users.clone(),
             hasher.clone(),
             tokens.clone(),
         )),
         current_user: Arc::new(GetCurrentUser::new(users.clone())),
+        update_me: Arc::new(UpdateMe::new(users.clone())),
+        delete_me: Arc::new(DeleteMe::new(users.clone())),
+        change_password: Arc::new(ChangePassword::new(users.clone(), hasher.clone())),
+        verify_email: Arc::new(VerifyEmail::new(
+            users.clone(),
+            email_tokens.clone(),
+            token_generator.clone(),
+            clock.clone(),
+        )),
+        forgot_password: Arc::new(ForgotPassword::new(
+            users.clone(),
+            email_tokens.clone(),
+            token_generator.clone(),
+            email_sender,
+            clock.clone(),
+            base_url,
+        )),
+        reset_password: Arc::new(ResetPassword::new(
+            users.clone(),
+            hasher.clone(),
+            email_tokens,
+            token_generator,
+            clock.clone(),
+        )),
+        list_users: Arc::new(ListUsers::new(users.clone())),
+        create_user: Arc::new(CreateUser::new(users.clone(), hasher, clock)),
+        update_user: Arc::new(UpdateUser::new(users.clone())),
+        delete_user: Arc::new(DeleteUser::new(users.clone())),
         assign_role: Arc::new(AssignRole::new(users)),
         tokens,
     }
@@ -241,32 +293,72 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
     use serde_json::{json, Value};
+    use std::sync::Once;
     use testcontainers_modules::postgres::Postgres as PgImage;
     use testcontainers_modules::testcontainers::runners::AsyncRunner;
     use testcontainers_modules::testcontainers::ContainerAsync;
     use tower::ServiceExt;
 
+    use iam::infrastructure::FakeEmailSender;
+
     const CLEAN_CODE_ID: &str = "00000000-0000-4000-8000-000000000002";
     const CLEAN_CODE_ISBN: &str = "978-0132350884";
+    const ADMIN_EMAIL: &str = "admin@library.local";
+    const ADMIN_PASSWORD: &str = "admin-pass-123";
 
-    /// Ephemeral Postgres + a fully composed app. Holds the container alive for
-    /// the test's lifetime.
+    // Pin known IAM secrets once for the whole test process so admin login works
+    // and tokens are stable. (edition 2021: set_var is a safe API.)
+    static INIT_ENV: Once = Once::new();
+    fn init_env() {
+        INIT_ENV.call_once(|| {
+            std::env::set_var("IAM_JWT_SECRET", "gateway-test-jwt-secret");
+            std::env::set_var("IAM_ADMIN_EMAIL", ADMIN_EMAIL);
+            std::env::set_var("IAM_ADMIN_PASSWORD", ADMIN_PASSWORD);
+        });
+    }
+
+    /// Ephemeral Postgres + a fully composed app, with a fake email sender whose
+    /// captured messages tests can read. Holds the container alive.
     struct TestApp {
         app: Router,
+        email: Arc<FakeEmailSender>,
         _container: ContainerAsync<PgImage>,
     }
 
     async fn spawn() -> TestApp {
+        init_env();
         let container = PgImage::default().start().await.expect("start postgres");
         let port = container.get_host_port_ipv4(5432).await.expect("host port");
         let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
         let db = persistence::db::connect(&url).await.expect("connect");
         migrate(&db).await.expect("migrate");
-        let (app, _scheduler) = build(db).await;
+        let email = Arc::new(FakeEmailSender::new());
+        let (app, _scheduler) = build(db, email.clone()).await;
         TestApp {
             app,
+            email,
             _container: container,
         }
+    }
+
+    async fn admin_token(app: &Router) -> String {
+        let (_, body) = call(
+            app,
+            "POST",
+            "/auth/login",
+            None,
+            Some(json!({"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD})),
+        )
+        .await;
+        body["token"].as_str().expect("admin token").to_owned()
+    }
+
+    /// Extract the raw token from a captured verification/reset link.
+    fn token_in_link(link: &str) -> String {
+        link.split("token=")
+            .nth(1)
+            .expect("token in link")
+            .to_owned()
     }
 
     async fn call(
@@ -443,5 +535,251 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["ranked"].as_array().expect("ranked").len(), 8);
         assert_eq!(body["ranked"][0], CLEAN_CODE_ID);
+    }
+
+    // ---- T-012: IAM v2 --------------------------------------------------------
+
+    #[tokio::test]
+    async fn user_management_is_admin_only_and_leaks_no_hash() {
+        let h = spawn().await;
+        let member = member_token(&h.app, "member@example.com").await;
+        let admin = admin_token(&h.app).await;
+
+        // 401 anon, 403 member, 200 admin.
+        assert_eq!(
+            call(&h.app, "GET", "/users", None, None).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            call(&h.app, "GET", "/users", Some(&member), None).await.0,
+            StatusCode::FORBIDDEN
+        );
+        let (ok, list) = call(&h.app, "GET", "/users", Some(&admin), None).await;
+        assert_eq!(ok, StatusCode::OK);
+        assert!(list["pagination"]["total"].as_u64().expect("total") >= 2);
+        // No password hash leaks anywhere in the listing.
+        assert!(!list.to_string().contains("password_hash"));
+        assert!(!list.to_string().contains("$argon2"));
+
+        // Admin creates a user; member cannot.
+        let (created, created_body) = call(
+            &h.app,
+            "POST",
+            "/users",
+            Some(&admin),
+            Some(json!({"email": "made@example.com", "password": "password123", "role": "librarian"})),
+        )
+        .await;
+        assert_eq!(created, StatusCode::CREATED);
+        assert_eq!(created_body["role"], "librarian");
+        let made_id = created_body["id"].as_str().expect("id").to_owned();
+
+        assert_eq!(
+            call(
+                &h.app,
+                "POST",
+                "/users",
+                Some(&member),
+                Some(
+                    json!({"email": "x@example.com", "password": "password123", "role": "member"})
+                ),
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+
+        // Admin patches + deletes the created user.
+        let (patched, patched_body) = call(
+            &h.app,
+            "PATCH",
+            &format!("/users/{made_id}"),
+            Some(&admin),
+            Some(json!({"active": false})),
+        )
+        .await;
+        assert_eq!(patched, StatusCode::OK);
+        assert_eq!(patched_body["active"], false);
+        assert_eq!(
+            call(
+                &h.app,
+                "DELETE",
+                &format!("/users/{made_id}"),
+                Some(&admin),
+                None
+            )
+            .await
+            .0,
+            StatusCode::NO_CONTENT
+        );
+    }
+
+    #[tokio::test]
+    async fn last_admin_cannot_delete_or_demote_self() {
+        let h = spawn().await;
+        let admin = admin_token(&h.app).await;
+        // The seeded admin is the only admin → self-delete is refused.
+        let (status, body) = call(&h.app, "DELETE", "/auth/me", Some(&admin), None).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["code"], "last_admin");
+    }
+
+    #[tokio::test]
+    async fn change_password_requires_correct_current() {
+        let h = spawn().await;
+        let token = member_token(&h.app, "cp@example.com").await;
+
+        // Wrong current → 401.
+        assert_eq!(
+            call(
+                &h.app,
+                "POST",
+                "/auth/change-password",
+                Some(&token),
+                Some(json!({"current_password": "wrongpass", "new_password": "newpassword1"})),
+            )
+            .await
+            .0,
+            StatusCode::UNAUTHORIZED
+        );
+
+        // Correct current → 204, and the new password logs in.
+        assert_eq!(
+            call(
+                &h.app,
+                "POST",
+                "/auth/change-password",
+                Some(&token),
+                Some(json!({"current_password": "password123", "new_password": "newpassword1"})),
+            )
+            .await
+            .0,
+            StatusCode::NO_CONTENT
+        );
+        let (relogin, _) = call(
+            &h.app,
+            "POST",
+            "/auth/login",
+            None,
+            Some(json!({"email": "cp@example.com", "password": "newpassword1"})),
+        )
+        .await;
+        assert_eq!(relogin, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn verify_email_marks_the_user_verified() {
+        let h = spawn().await;
+        let token = member_token(&h.app, "verify@example.com").await;
+
+        // Registration captured a verification email; user starts unverified.
+        let (_, me_before) = call(&h.app, "GET", "/auth/me", Some(&token), None).await;
+        assert_eq!(me_before["verified"], false);
+
+        let verify_link = h
+            .email
+            .sent()
+            .into_iter()
+            .find(|e| e.kind == "verify" && e.to == "verify@example.com")
+            .expect("verification email captured")
+            .link;
+        let raw = token_in_link(&verify_link);
+
+        assert_eq!(
+            call(
+                &h.app,
+                "POST",
+                "/auth/verify-email",
+                None,
+                Some(json!({"token": raw}))
+            )
+            .await
+            .0,
+            StatusCode::NO_CONTENT
+        );
+
+        let (_, me_after) = call(&h.app, "GET", "/auth/me", Some(&token), None).await;
+        assert_eq!(me_after["verified"], true);
+    }
+
+    #[tokio::test]
+    async fn forgot_then_reset_password_is_single_use() {
+        let h = spawn().await;
+        member_token(&h.app, "reset@example.com").await;
+
+        // forgot-password is always 202 (no enumeration), even for unknown emails.
+        assert_eq!(
+            call(
+                &h.app,
+                "POST",
+                "/auth/forgot-password",
+                None,
+                Some(json!({"email": "ghost@example.com"}))
+            )
+            .await
+            .0,
+            StatusCode::ACCEPTED
+        );
+        assert_eq!(
+            call(
+                &h.app,
+                "POST",
+                "/auth/forgot-password",
+                None,
+                Some(json!({"email": "reset@example.com"}))
+            )
+            .await
+            .0,
+            StatusCode::ACCEPTED
+        );
+
+        let reset_link = h
+            .email
+            .sent()
+            .into_iter()
+            .find(|e| e.kind == "reset" && e.to == "reset@example.com")
+            .expect("reset email captured")
+            .link;
+        let raw = token_in_link(&reset_link);
+
+        // Valid reset → 204; the new password logs in.
+        assert_eq!(
+            call(
+                &h.app,
+                "POST",
+                "/auth/reset-password",
+                None,
+                Some(json!({"token": raw, "new_password": "brandnew123"})),
+            )
+            .await
+            .0,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            call(
+                &h.app,
+                "POST",
+                "/auth/login",
+                None,
+                Some(json!({"email": "reset@example.com", "password": "brandnew123"})),
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+
+        // Reusing the same token fails (single-use).
+        assert_eq!(
+            call(
+                &h.app,
+                "POST",
+                "/auth/reset-password",
+                None,
+                Some(json!({"token": raw, "new_password": "another123"})),
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
     }
 }

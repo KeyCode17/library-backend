@@ -14,6 +14,11 @@ pub struct Model {
     pub email: String,
     pub password_hash: String,
     pub role: String,
+    /// Whether the email has been verified (login is not blocked on this).
+    pub verified: bool,
+    /// Whether the account is active (deactivated accounts cannot log in).
+    pub active: bool,
+    pub created_at: DateTimeUtc,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

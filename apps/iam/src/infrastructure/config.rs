@@ -15,12 +15,15 @@ use crate::domain::{IamError, PasswordHasher, Role, User};
 
 const DEFAULT_ADMIN_EMAIL: &str = "admin@library.local";
 const DEFAULT_TTL_SECS: u64 = 3600;
+const DEFAULT_BASE_URL: &str = "http://localhost:8080";
 
 pub struct IamConfig {
     pub jwt_secret: Vec<u8>,
     pub token_ttl_secs: u64,
     pub admin_email: String,
     pub admin_password: String,
+    /// Public base URL used to build verification/reset links (`APP_PUBLIC_URL`).
+    pub public_base_url: String,
 }
 
 impl IamConfig {
@@ -54,24 +57,31 @@ impl IamConfig {
             }
         };
 
+        let public_base_url =
+            env_nonempty("APP_PUBLIC_URL").unwrap_or_else(|| DEFAULT_BASE_URL.to_owned());
+
         Self {
             jwt_secret,
             token_ttl_secs,
             admin_email,
             admin_password,
+            public_base_url,
         }
     }
 
     /// Build the seeded admin user, hashing the configured admin password. The
-    /// plaintext password never leaves this call.
+    /// plaintext password never leaves this call. The seed admin is pre-verified.
     pub fn seed_admin(&self, hasher: &dyn PasswordHasher) -> Result<User, IamError> {
         let password_hash = hasher.hash(&self.admin_password)?;
-        Ok(User::new(
-            Uuid::new_v4(),
-            self.admin_email.to_lowercase(),
+        Ok(User {
+            id: Uuid::new_v4(),
+            email: self.admin_email.to_lowercase(),
             password_hash,
-            Role::Admin,
-        ))
+            role: Role::Admin,
+            verified: true,
+            active: true,
+            created_at: chrono::Utc::now(),
+        })
     }
 }
 

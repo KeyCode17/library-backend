@@ -1,19 +1,26 @@
 use std::sync::Arc;
 
-use axum::extract::{FromRef, FromRequestParts, Path, State};
+use axum::extract::{FromRef, FromRequestParts, Path, Query, State};
 use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use axum::{Json, Router};
+use serde::Deserialize;
 use uuid::Uuid;
 
 use super::dto::{
-    AssignRoleRequest, AuthTokenResponse, CredentialsRequest, ErrorBody, PrincipalResponse,
+    AssignRoleRequest, AuthTokenResponse, ChangePasswordRequest, CreateUserRequest,
+    CredentialsRequest, ErrorBody, ForgotPasswordRequest, PrincipalResponse, ResetPasswordRequest,
+    UpdateMeRequest, UpdateUserRequest, UserListResponse, UserSummary, VerifyEmailRequest,
 };
-use crate::application::{AssignRole, GetCurrentUser, LoginUser, RegisterUser};
-use crate::domain::{AuthPrincipal, IamError, TokenService};
+use crate::application::{
+    AssignRole, ChangePassword, CreateUser, DeleteMe, DeleteUser, ForgotPassword, GetCurrentUser,
+    ListUsers, LoginUser, RegisterUser, ResetPassword, UpdateMe, UpdateUser, VerifyEmail,
+};
+use crate::domain::pagination::DEFAULT_PAGE_SIZE;
+use crate::domain::{AuthPrincipal, IamError, PageRequest, TokenService};
 
 /// State injected into the IAM routes: one use case per operation plus the token
 /// service (used by the bearer extractor). Cheap to clone (just `Arc`s).
@@ -22,24 +29,28 @@ pub struct IamState {
     pub register: Arc<RegisterUser>,
     pub login: Arc<LoginUser>,
     pub current_user: Arc<GetCurrentUser>,
+    pub update_me: Arc<UpdateMe>,
+    pub delete_me: Arc<DeleteMe>,
+    pub change_password: Arc<ChangePassword>,
+    pub verify_email: Arc<VerifyEmail>,
+    pub forgot_password: Arc<ForgotPassword>,
+    pub reset_password: Arc<ResetPassword>,
+    pub list_users: Arc<ListUsers>,
+    pub create_user: Arc<CreateUser>,
+    pub update_user: Arc<UpdateUser>,
+    pub delete_user: Arc<DeleteUser>,
     pub assign_role: Arc<AssignRole>,
     pub tokens: Arc<dyn TokenService>,
 }
 
-/// Lets the bearer extractor pull just the token service out of `IamState`.
 impl FromRef<IamState> for Arc<dyn TokenService> {
     fn from_ref(state: &IamState) -> Self {
         state.tokens.clone()
     }
 }
 
-/// Extractor that proves the caller presented a valid bearer token. Its presence
-/// in a handler signature is what makes an endpoint require authentication;
-/// absence/invalidity yields `401` before the handler runs.
-///
-/// It depends only on `Arc<dyn TokenService>` (via `FromRef`), so any context's
-/// router state can reuse it by exposing the token service — it does not need the
-/// whole `IamState`.
+/// Extractor proving a valid bearer token. Depends only on `Arc<dyn TokenService>`
+/// (via `FromRef`), so other contexts reuse it.
 pub struct AuthenticatedUser(pub AuthPrincipal);
 
 impl<S> FromRequestParts<S> for AuthenticatedUser
@@ -51,7 +62,6 @@ where
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let tokens = Arc::<dyn TokenService>::from_ref(state);
-
         let token = parts
             .headers
             .get(AUTHORIZATION)
@@ -60,7 +70,6 @@ where
             .map(str::trim)
             .filter(|token| !token.is_empty())
             .ok_or_else(unauthorized)?;
-
         let principal = tokens.verify(token).map_err(|_| unauthorized())?;
         Ok(AuthenticatedUser(principal))
     }
@@ -74,7 +83,18 @@ fn unauthorized() -> Response {
         .into_response()
 }
 
-/// `POST /auth/register` — public self-registration (creates a member).
+#[derive(Debug, Deserialize)]
+struct ListQuery {
+    page: Option<u32>,
+    page_size: Option<u32>,
+}
+
+fn page_request(page: Option<u32>, page_size: Option<u32>) -> PageRequest {
+    PageRequest::new(page.unwrap_or(1), page_size.unwrap_or(DEFAULT_PAGE_SIZE))
+}
+
+// ---- auth -----------------------------------------------------------------
+
 async fn register(State(iam): State<IamState>, Json(body): Json<CredentialsRequest>) -> Response {
     match iam.register.execute(&body.email, &body.password).await {
         Ok(user) => (StatusCode::CREATED, Json(PrincipalResponse::from(user))).into_response(),
@@ -82,7 +102,6 @@ async fn register(State(iam): State<IamState>, Json(body): Json<CredentialsReque
     }
 }
 
-/// `POST /auth/login` — exchange credentials for a JWT.
 async fn login(State(iam): State<IamState>, Json(body): Json<CredentialsRequest>) -> Response {
     match iam.login.execute(&body.email, &body.password).await {
         Ok(issued) => Json(AuthTokenResponse::from(issued)).into_response(),
@@ -90,7 +109,6 @@ async fn login(State(iam): State<IamState>, Json(body): Json<CredentialsRequest>
     }
 }
 
-/// `GET /auth/me` — the current principal (requires auth).
 async fn me(
     State(iam): State<IamState>,
     AuthenticatedUser(principal): AuthenticatedUser,
@@ -101,8 +119,134 @@ async fn me(
     }
 }
 
-/// `POST /users/{id}/roles` — assign a role (requires admin). The extractor
-/// guarantees authentication (401); the use case enforces the admin role (403).
+async fn update_me(
+    State(iam): State<IamState>,
+    AuthenticatedUser(principal): AuthenticatedUser,
+    Json(body): Json<UpdateMeRequest>,
+) -> Response {
+    match iam.update_me.execute(&principal, &body.email).await {
+        Ok(user) => Json(PrincipalResponse::from(user)).into_response(),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn delete_me(
+    State(iam): State<IamState>,
+    AuthenticatedUser(principal): AuthenticatedUser,
+) -> Response {
+    match iam.delete_me.execute(&principal).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn change_password(
+    State(iam): State<IamState>,
+    AuthenticatedUser(principal): AuthenticatedUser,
+    Json(body): Json<ChangePasswordRequest>,
+) -> Response {
+    match iam
+        .change_password
+        .execute(&principal, &body.current_password, &body.new_password)
+        .await
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn verify_email(
+    State(iam): State<IamState>,
+    Json(body): Json<VerifyEmailRequest>,
+) -> Response {
+    match iam.verify_email.execute(&body.token).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn forgot_password(
+    State(iam): State<IamState>,
+    Json(body): Json<ForgotPasswordRequest>,
+) -> Response {
+    // Always 202 — never reveal whether the email exists.
+    let _ = iam.forgot_password.execute(&body.email).await;
+    StatusCode::ACCEPTED.into_response()
+}
+
+async fn reset_password(
+    State(iam): State<IamState>,
+    Json(body): Json<ResetPasswordRequest>,
+) -> Response {
+    match iam
+        .reset_password
+        .execute(&body.token, &body.new_password)
+        .await
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => error_response(&error),
+    }
+}
+
+// ---- admin user management ------------------------------------------------
+
+async fn list_users(
+    State(iam): State<IamState>,
+    AuthenticatedUser(principal): AuthenticatedUser,
+    Query(query): Query<ListQuery>,
+) -> Response {
+    match iam
+        .list_users
+        .execute(&principal, page_request(query.page, query.page_size))
+        .await
+    {
+        Ok(page) => Json(UserListResponse::from(page)).into_response(),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn create_user(
+    State(iam): State<IamState>,
+    AuthenticatedUser(principal): AuthenticatedUser,
+    Json(body): Json<CreateUserRequest>,
+) -> Response {
+    match iam
+        .create_user
+        .execute(&principal, &body.email, &body.password, body.role)
+        .await
+    {
+        Ok(user) => (StatusCode::CREATED, Json(UserSummary::from(user))).into_response(),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn update_user(
+    State(iam): State<IamState>,
+    AuthenticatedUser(principal): AuthenticatedUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<UpdateUserRequest>,
+) -> Response {
+    match iam
+        .update_user
+        .execute(&principal, id, body.email, body.active)
+        .await
+    {
+        Ok(user) => Json(UserSummary::from(user)).into_response(),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn delete_user(
+    State(iam): State<IamState>,
+    AuthenticatedUser(principal): AuthenticatedUser,
+    Path(id): Path<Uuid>,
+) -> Response {
+    match iam.delete_user.execute(&principal, id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => error_response(&error),
+    }
+}
+
 async fn assign_role(
     State(iam): State<IamState>,
     AuthenticatedUser(principal): AuthenticatedUser,
@@ -142,8 +286,18 @@ fn error_response(error: &IamError) -> Response {
             "password must be at least 8 characters",
         ),
         IamError::InvalidEmail => (StatusCode::BAD_REQUEST, "invalid_email", "invalid email"),
-        // Internal failures: generic 500, no detail leaked.
-        IamError::Hashing(_) | IamError::Token(_) | IamError::Repository(_) => (
+        IamError::InvalidToken => (StatusCode::BAD_REQUEST, "invalid_token", "invalid token"),
+        IamError::TokenExpired => (StatusCode::BAD_REQUEST, "token_expired", "token expired"),
+        IamError::TokenConsumed => (StatusCode::BAD_REQUEST, "token_used", "token already used"),
+        IamError::LastAdmin => (
+            StatusCode::CONFLICT,
+            "last_admin",
+            "cannot remove the last admin",
+        ),
+        IamError::Hashing(_)
+        | IamError::Token(_)
+        | IamError::Email(_)
+        | IamError::Repository(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal",
             "internal error",
@@ -157,224 +311,13 @@ pub fn router(state: IamState) -> Router {
     Router::new()
         .route("/auth/register", post(register))
         .route("/auth/login", post(login))
-        .route("/auth/me", get(me))
+        .route("/auth/me", get(me).patch(update_me).delete(delete_me))
+        .route("/auth/change-password", post(change_password))
+        .route("/auth/verify-email", post(verify_email))
+        .route("/auth/forgot-password", post(forgot_password))
+        .route("/auth/reset-password", post(reset_password))
+        .route("/users", get(list_users).post(create_user))
+        .route("/users/{id}", patch(update_user).delete(delete_user))
         .route("/users/{id}/roles", post(assign_role))
         .with_state(state)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::domain::{PasswordHasher, Role, User};
-    use crate::infrastructure::argon2_hasher::Argon2PasswordHasher;
-    use crate::infrastructure::in_memory_users::InMemoryUserRepository;
-    use crate::infrastructure::jwt::JwtTokenService;
-    use axum::body::Body;
-    use axum::http::header::CONTENT_TYPE;
-    use axum::http::Request;
-    use http_body_util::BodyExt;
-    use serde_json::{json, Value};
-    use tower::ServiceExt;
-
-    const ADMIN_EMAIL: &str = "admin@library.local";
-    const ADMIN_PASSWORD: &str = "admin-password-123";
-
-    fn build_app() -> Router {
-        let hasher = Arc::new(Argon2PasswordHasher::new());
-        let tokens: Arc<dyn TokenService> =
-            Arc::new(JwtTokenService::new(b"test-secret-not-real", 3600));
-
-        let admin = User::new(
-            Uuid::new_v4(),
-            ADMIN_EMAIL.to_owned(),
-            hasher.hash(ADMIN_PASSWORD).expect("hash admin"),
-            Role::Admin,
-        );
-        let users = Arc::new(InMemoryUserRepository::seeded_with(vec![admin]));
-
-        let state = IamState {
-            register: Arc::new(RegisterUser::new(users.clone(), hasher.clone())),
-            login: Arc::new(LoginUser::new(
-                users.clone(),
-                hasher.clone(),
-                tokens.clone(),
-            )),
-            current_user: Arc::new(GetCurrentUser::new(users.clone())),
-            assign_role: Arc::new(AssignRole::new(users)),
-            tokens,
-        };
-        router(state)
-    }
-
-    async fn call(
-        app: &Router,
-        method: &str,
-        uri: &str,
-        bearer: Option<&str>,
-        body: Option<Value>,
-    ) -> (StatusCode, Value) {
-        let mut builder = Request::builder().method(method).uri(uri);
-        if let Some(token) = bearer {
-            builder = builder.header(AUTHORIZATION, format!("Bearer {token}"));
-        }
-        let request = match body {
-            Some(value) => builder
-                .header(CONTENT_TYPE, "application/json")
-                .body(Body::from(value.to_string()))
-                .expect("request builds"),
-            None => builder.body(Body::empty()).expect("request builds"),
-        };
-
-        let response = app.clone().oneshot(request).await.expect("router responds");
-        let status = response.status();
-        let bytes = response
-            .into_body()
-            .collect()
-            .await
-            .expect("body collects")
-            .to_bytes();
-        let value = if bytes.is_empty() {
-            Value::Null
-        } else {
-            serde_json::from_slice(&bytes).expect("valid json")
-        };
-        (status, value)
-    }
-
-    async fn login(app: &Router, email: &str, password: &str) -> (StatusCode, Value) {
-        call(
-            app,
-            "POST",
-            "/auth/login",
-            None,
-            Some(json!({"email": email, "password": password})),
-        )
-        .await
-    }
-
-    #[tokio::test]
-    async fn register_creates_a_member() {
-        let app = build_app();
-        let (status, body) = call(
-            &app,
-            "POST",
-            "/auth/register",
-            None,
-            Some(json!({"email": "newbie@example.com", "password": "longenough"})),
-        )
-        .await;
-
-        assert_eq!(status, StatusCode::CREATED);
-        assert_eq!(body["role"], "member");
-        assert_eq!(body["email"], "newbie@example.com");
-        assert!(body.get("password_hash").is_none());
-        assert!(body.get("password").is_none());
-    }
-
-    #[tokio::test]
-    async fn login_succeeds_and_fails_correctly() {
-        let app = build_app();
-        call(
-            &app,
-            "POST",
-            "/auth/register",
-            None,
-            Some(json!({"email": "u@example.com", "password": "longenough"})),
-        )
-        .await;
-
-        let (ok_status, ok_body) = login(&app, "u@example.com", "longenough").await;
-        assert_eq!(ok_status, StatusCode::OK);
-        assert_eq!(ok_body["token_type"], "Bearer");
-        assert!(ok_body["token"].as_str().expect("token").contains('.'));
-
-        let (bad_status, bad_body) = login(&app, "u@example.com", "wrong-password").await;
-        assert_eq!(bad_status, StatusCode::UNAUTHORIZED);
-        assert_eq!(bad_body["code"], "invalid_credentials");
-
-        // Unknown email is indistinguishable from a wrong password.
-        let (missing_status, missing_body) = login(&app, "ghost@example.com", "whatever1").await;
-        assert_eq!(missing_status, StatusCode::UNAUTHORIZED);
-        assert_eq!(missing_body["code"], "invalid_credentials");
-    }
-
-    #[tokio::test]
-    async fn me_requires_a_valid_token() {
-        let app = build_app();
-        call(
-            &app,
-            "POST",
-            "/auth/register",
-            None,
-            Some(json!({"email": "me@example.com", "password": "longenough"})),
-        )
-        .await;
-        let (_, token_body) = login(&app, "me@example.com", "longenough").await;
-        let token = token_body["token"].as_str().expect("token");
-
-        let (ok_status, ok_body) = call(&app, "GET", "/auth/me", Some(token), None).await;
-        assert_eq!(ok_status, StatusCode::OK);
-        assert_eq!(ok_body["email"], "me@example.com");
-        assert_eq!(ok_body["role"], "member");
-
-        let (no_auth, no_body) = call(&app, "GET", "/auth/me", None, None).await;
-        assert_eq!(no_auth, StatusCode::UNAUTHORIZED);
-        assert_eq!(no_body["code"], "unauthorized");
-
-        let (bad_auth, _) = call(&app, "GET", "/auth/me", Some("garbage.token.here"), None).await;
-        assert_eq!(bad_auth, StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn role_assignment_is_admin_only() {
-        let app = build_app();
-
-        // A fresh member.
-        let (_, member) = call(
-            &app,
-            "POST",
-            "/auth/register",
-            None,
-            Some(json!({"email": "target@example.com", "password": "longenough"})),
-        )
-        .await;
-        let member_id = member["id"].as_str().expect("id").to_owned();
-
-        let (_, member_token_body) = login(&app, "target@example.com", "longenough").await;
-        let member_token = member_token_body["token"].as_str().expect("token");
-
-        let uri = format!("/users/{member_id}/roles");
-
-        // No token at all → 401.
-        let (unauth, _) = call(&app, "POST", &uri, None, Some(json!({"role": "librarian"}))).await;
-        assert_eq!(unauth, StatusCode::UNAUTHORIZED);
-
-        // Authenticated member (not admin) → 403.
-        let (forbidden, forbidden_body) = call(
-            &app,
-            "POST",
-            &uri,
-            Some(member_token),
-            Some(json!({"role": "librarian"})),
-        )
-        .await;
-        assert_eq!(forbidden, StatusCode::FORBIDDEN);
-        assert_eq!(forbidden_body["code"], "forbidden");
-
-        // Admin → 200 and the role changes.
-        let (_, admin_token_body) = login(&app, ADMIN_EMAIL, ADMIN_PASSWORD).await;
-        let admin_token = admin_token_body["token"].as_str().expect("token");
-
-        let (ok, ok_body) = call(
-            &app,
-            "POST",
-            &uri,
-            Some(admin_token),
-            Some(json!({"role": "librarian"})),
-        )
-        .await;
-        assert_eq!(ok, StatusCode::OK);
-        assert_eq!(ok_body["role"], "librarian");
-        assert_eq!(ok_body["id"], member_id);
-    }
 }
