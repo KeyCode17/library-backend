@@ -6,6 +6,7 @@
 use async_trait::async_trait;
 
 use crate::domain::{EmailSender, IamError};
+use crate::infrastructure::config::is_production;
 
 const RESEND_URL: &str = "https://api.resend.com/emails";
 const DEFAULT_FROM: &str = "onboarding@resend.dev";
@@ -18,7 +19,10 @@ pub struct ResendEmailSender {
 
 impl ResendEmailSender {
     pub fn from_env() -> Self {
-        let api_key = env_nonempty("RESEND_API_KEY");
+        // Fail closed in production (like the JWT secret / DATABASE_URL): refuse to
+        // start rather than silently dropping every email.
+        let api_key = resolve_api_key(is_production(), env_nonempty("RESEND_API_KEY"))
+            .unwrap_or_else(|message| panic!("{message}"));
         let from = env_nonempty("RESEND_FROM").unwrap_or_else(|| DEFAULT_FROM.to_owned());
         Self {
             api_key,
@@ -72,6 +76,21 @@ fn env_nonempty(key: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+/// Pure prod/dev policy for the API key (testable without touching env):
+/// present → use it; prod + missing → error (fail closed); dev + missing → `None`
+/// (log-no-op).
+fn resolve_api_key(is_production: bool, api_key: Option<String>) -> Result<Option<String>, String> {
+    match (api_key, is_production) {
+        (Some(key), _) => Ok(Some(key)),
+        (None, true) => Err(
+            "RESEND_API_KEY must be set in production (APP_ENV/RUST_ENV=production); \
+             refusing to start with email disabled."
+                .to_owned(),
+        ),
+        (None, false) => Ok(None),
+    }
+}
+
 #[async_trait]
 impl EmailSender for ResendEmailSender {
     async fn send_verification(&self, email: &str, link: &str) -> Result<(), IamError> {
@@ -85,5 +104,28 @@ impl EmailSender for ResendEmailSender {
              This link expires in 1 hour.</p>"
         );
         self.send(email, "Reset your password", &html).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_api_key;
+
+    #[test]
+    fn key_present_is_used_anywhere() {
+        assert_eq!(
+            resolve_api_key(true, Some("re_123".into())).unwrap(),
+            Some("re_123".to_owned())
+        );
+    }
+
+    #[test]
+    fn missing_key_fails_closed_in_production() {
+        assert!(resolve_api_key(true, None).is_err());
+    }
+
+    #[test]
+    fn missing_key_is_a_dev_no_op() {
+        assert_eq!(resolve_api_key(false, None).unwrap(), None);
     }
 }
