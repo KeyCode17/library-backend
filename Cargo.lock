@@ -553,7 +553,7 @@ dependencies = [
 
 [[package]]
 name = "catalog"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -601,7 +601,7 @@ dependencies = [
 
 [[package]]
 name = "chat"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -1276,7 +1276,7 @@ dependencies = [
 
 [[package]]
 name = "gateway"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -1627,7 +1627,7 @@ dependencies = [
 
 [[package]]
 name = "iam"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "argon2",
  "async-trait",
@@ -1896,7 +1896,7 @@ checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 
 [[package]]
 name = "lending"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -2031,7 +2031,7 @@ dependencies = [
 
 [[package]]
 name = "migration"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "async-trait",
  "persistence",
@@ -2097,7 +2097,7 @@ dependencies = [
 
 [[package]]
 name = "notification"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -2372,7 +2372,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "persistence"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "sea-orm",
 ]
@@ -2759,14 +2759,14 @@ checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 
 [[package]]
 name = "recommender"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "uuid",
 ]
 
 [[package]]
 name = "recommender-ffi"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "recommender",
  "uniffi",

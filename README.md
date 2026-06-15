@@ -1,7 +1,8 @@
 # library-backend
 
-Rust/Axum backend for the library project. **v1.0.0 — ready to deploy/live.** Deployment requires
-`DATABASE_URL` and `IAM_JWT_SECRET` (both fail-closed in production), plus FCM config for push.
+Rust/Axum backend for the library project. **v1.1.0 — IAM v2: full user management, account
+self-service, and email (verification + password reset via Resend).** Deployment requires
+`DATABASE_URL`, `IAM_JWT_SECRET`, and `RESEND_API_KEY` (all fail-closed in production), plus FCM config for push.
 
 ## What's built
 
