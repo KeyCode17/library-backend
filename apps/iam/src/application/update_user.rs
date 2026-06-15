@@ -2,12 +2,13 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use crate::domain::{AuthPrincipal, IamError, Permission, Role, User, UserRepository};
+use crate::domain::{AdminGuard, AuthPrincipal, IamError, Permission, User, UserRepository};
 
 use super::validation::{normalize_email, validate_email};
 
 /// Use case: admin updates a user's email and/or active flag. Deactivating
-/// yourself or the last admin is refused (lockout safety).
+/// yourself is refused up front; deactivating the last active admin is refused
+/// transactionally in the repository.
 pub struct UpdateUser {
     users: Arc<dyn UserRepository>,
 }
@@ -27,39 +28,51 @@ impl UpdateUser {
         if !actor.role.grants(Permission::ManageUsers) {
             return Err(IamError::Forbidden);
         }
-
-        let target = self
-            .users
-            .find_by_id(target_id)
-            .await?
-            .ok_or(IamError::UserNotFound)?;
-
-        if active == Some(false) {
-            if target.id == actor.user_id {
-                return Err(IamError::LastAdmin);
-            }
-            if target.role == Role::Admin && self.users.count_active_admins().await? <= 1 {
-                return Err(IamError::LastAdmin);
-            }
+        if active == Some(false) && target_id == actor.user_id {
+            return Err(IamError::LastAdmin); // can't deactivate yourself
         }
 
-        let mut updated = target;
+        let mut current: Option<User> = None;
+
         if let Some(email) = email {
             let email = normalize_email(&email);
             validate_email(&email)?;
-            updated = self
-                .users
-                .set_email(target_id, &email)
-                .await?
-                .ok_or(IamError::UserNotFound)?;
+            current = Some(
+                self.users
+                    .set_email(target_id, &email)
+                    .await?
+                    .ok_or(IamError::UserNotFound)?,
+            );
         }
-        if let Some(active) = active {
-            updated = self
-                .users
-                .set_active(target_id, active)
-                .await?
-                .ok_or(IamError::UserNotFound)?;
+
+        match active {
+            Some(false) => {
+                current = Some(
+                    match self.users.deactivate_guarding_last_admin(target_id).await? {
+                        AdminGuard::Done(user) => user,
+                        AdminGuard::LastAdmin => return Err(IamError::LastAdmin),
+                        AdminGuard::NotFound => return Err(IamError::UserNotFound),
+                    },
+                );
+            }
+            Some(true) => {
+                current = Some(
+                    self.users
+                        .set_active(target_id, true)
+                        .await?
+                        .ok_or(IamError::UserNotFound)?,
+                );
+            }
+            None => {}
         }
-        Ok(updated)
+
+        match current {
+            Some(user) => Ok(user),
+            None => self
+                .users
+                .find_by_id(target_id)
+                .await?
+                .ok_or(IamError::UserNotFound),
+        }
     }
 }

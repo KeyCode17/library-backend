@@ -5,11 +5,11 @@ use uuid::Uuid;
 
 use persistence::entity::user;
 use persistence::sea_orm::{
-    ActiveModelTrait, ColumnTrait, DatabaseConnection, DbErr, EntityTrait, IntoActiveModel,
-    PaginatorTrait, QueryFilter, QueryOrder, Set,
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait,
+    IntoActiveModel, PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, Set, TransactionTrait,
 };
 
-use crate::domain::{IamError, Page, PageRequest, Role, User, UserRepository};
+use crate::domain::{AdminGuard, IamError, Page, PageRequest, Role, User, UserRepository};
 
 pub struct SeaOrmUserRepository {
     db: DatabaseConnection,
@@ -85,11 +85,6 @@ impl UserRepository for SeaOrmUserRepository {
         Ok(())
     }
 
-    async fn set_role(&self, id: Uuid, role: Role) -> Result<Option<User>, IamError> {
-        self.update_field(id, |active| active.role = Set(role.as_str().to_owned()))
-            .await
-    }
-
     async fn list(&self, request: PageRequest) -> Result<Page<User>, IamError> {
         let paginator = user::Entity::find()
             .order_by_asc(user::Column::CreatedAt)
@@ -141,22 +136,92 @@ impl UserRepository for SeaOrmUserRepository {
             .await
     }
 
-    async fn delete(&self, id: Uuid) -> Result<bool, IamError> {
-        let result = user::Entity::delete_by_id(id)
-            .exec(&self.db)
+    async fn delete_guarding_last_admin(&self, id: Uuid) -> Result<AdminGuard<()>, IamError> {
+        let txn = self.db.begin().await.map_err(backend)?;
+        let admins = locked_active_admin_ids(&txn).await?;
+        let Some(target) = user::Entity::find_by_id(id)
+            .one(&txn)
+            .await
+            .map_err(backend)?
+        else {
+            return Ok(AdminGuard::NotFound); // txn drops -> rollback
+        };
+        if is_last_active_admin(&admins, &target) {
+            return Ok(AdminGuard::LastAdmin);
+        }
+        user::Entity::delete_by_id(id)
+            .exec(&txn)
             .await
             .map_err(backend)?;
-        Ok(result.rows_affected > 0)
+        txn.commit().await.map_err(backend)?;
+        Ok(AdminGuard::Done(()))
     }
 
-    async fn count_active_admins(&self) -> Result<u64, IamError> {
-        user::Entity::find()
-            .filter(user::Column::Role.eq(Role::Admin.as_str()))
-            .filter(user::Column::Active.eq(true))
-            .count(&self.db)
+    async fn deactivate_guarding_last_admin(&self, id: Uuid) -> Result<AdminGuard<User>, IamError> {
+        let txn = self.db.begin().await.map_err(backend)?;
+        let admins = locked_active_admin_ids(&txn).await?;
+        let Some(model) = user::Entity::find_by_id(id)
+            .one(&txn)
             .await
-            .map_err(backend)
+            .map_err(backend)?
+        else {
+            return Ok(AdminGuard::NotFound);
+        };
+        if is_last_active_admin(&admins, &model) {
+            return Ok(AdminGuard::LastAdmin);
+        }
+        let mut active = model.into_active_model();
+        active.active = Set(false);
+        let updated = active.update(&txn).await.map_err(backend)?;
+        txn.commit().await.map_err(backend)?;
+        Ok(AdminGuard::Done(to_domain(updated)?))
     }
+
+    async fn set_role_guarding_last_admin(
+        &self,
+        id: Uuid,
+        role: Role,
+    ) -> Result<AdminGuard<User>, IamError> {
+        let txn = self.db.begin().await.map_err(backend)?;
+        let admins = locked_active_admin_ids(&txn).await?;
+        let Some(model) = user::Entity::find_by_id(id)
+            .one(&txn)
+            .await
+            .map_err(backend)?
+        else {
+            return Ok(AdminGuard::NotFound);
+        };
+        let demotes_admin = role != Role::Admin;
+        if demotes_admin && is_last_active_admin(&admins, &model) {
+            return Ok(AdminGuard::LastAdmin);
+        }
+        let mut active = model.into_active_model();
+        active.role = Set(role.as_str().to_owned());
+        let updated = active.update(&txn).await.map_err(backend)?;
+        txn.commit().await.map_err(backend)?;
+        Ok(AdminGuard::Done(to_domain(updated)?))
+    }
+}
+
+/// `SELECT id FROM users WHERE role='admin' AND active=true FOR UPDATE` — locks
+/// the active-admin set so concurrent guarded mutations serialize.
+async fn locked_active_admin_ids<C: ConnectionTrait>(conn: &C) -> Result<Vec<Uuid>, IamError> {
+    let admins = user::Entity::find()
+        .filter(user::Column::Role.eq(Role::Admin.as_str()))
+        .filter(user::Column::Active.eq(true))
+        .lock_exclusive()
+        .all(conn)
+        .await
+        .map_err(backend)?;
+    Ok(admins.into_iter().map(|model| model.id).collect())
+}
+
+/// Whether `target` is an active admin and the only one left.
+fn is_last_active_admin(active_admin_ids: &[Uuid], target: &user::Model) -> bool {
+    target.role == Role::Admin.as_str()
+        && target.active
+        && active_admin_ids.contains(&target.id)
+        && active_admin_ids.len() <= 1
 }
 
 impl SeaOrmUserRepository {

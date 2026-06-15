@@ -76,4 +76,23 @@ impl EmailTokenRepository for SeaOrmEmailTokenRepository {
             .map_err(backend)?;
         Ok(result.rows_affected >= 1)
     }
+
+    async fn consume_all_for_user(
+        &self,
+        user_id: Uuid,
+        kind: EmailTokenKind,
+        at: DateTime<Utc>,
+    ) -> Result<u64, IamError> {
+        // UPDATE email_tokens SET consumed_at=$at
+        //   WHERE user_id=$id AND kind=$kind AND consumed_at IS NULL
+        let result = email_token::Entity::update_many()
+            .col_expr(email_token::Column::ConsumedAt, Expr::value(at))
+            .filter(email_token::Column::UserId.eq(user_id))
+            .filter(email_token::Column::Kind.eq(kind.as_str()))
+            .filter(email_token::Column::ConsumedAt.is_null())
+            .exec(&self.db)
+            .await
+            .map_err(backend)?;
+        Ok(result.rows_affected)
+    }
 }

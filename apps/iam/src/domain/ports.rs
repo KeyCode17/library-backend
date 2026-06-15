@@ -5,12 +5,23 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-use super::email_token::EmailToken;
+use super::email_token::{EmailToken, EmailTokenKind};
 use super::error::IamError;
 use super::pagination::{Page, PageRequest};
 use super::principal::AuthPrincipal;
 use super::role::Role;
 use super::user::User;
+
+/// Outcome of a last-admin-guarded mutation.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AdminGuard<T> {
+    /// The mutation was applied.
+    Done(T),
+    /// Refused: it would have removed the last active admin.
+    LastAdmin,
+    /// No such user.
+    NotFound,
+}
 
 /// Persistence port for users.
 #[async_trait]
@@ -19,23 +30,34 @@ pub trait UserRepository: Send + Sync {
     async fn find_by_id(&self, id: Uuid) -> Result<Option<User>, IamError>;
     /// Insert a new user. Returns `EmailAlreadyExists` if the email is taken.
     async fn insert(&self, user: User) -> Result<(), IamError>;
-    /// Set a user's role; returns the updated user, or `None` if absent.
-    async fn set_role(&self, id: Uuid, role: Role) -> Result<Option<User>, IamError>;
     /// Paginated user list (admin).
     async fn list(&self, request: PageRequest) -> Result<Page<User>, IamError>;
     /// Update a user's email. Returns `EmailAlreadyExists` on conflict, `None` if
     /// the user is absent.
     async fn set_email(&self, id: Uuid, email: &str) -> Result<Option<User>, IamError>;
-    /// Activate/deactivate; returns the updated user, or `None` if absent.
+    /// Activate/reactivate; returns the updated user, or `None` if absent.
+    /// (Deactivation goes through `deactivate_guarding_last_admin`.)
     async fn set_active(&self, id: Uuid, active: bool) -> Result<Option<User>, IamError>;
     /// Replace a user's password hash; returns `None` if absent.
     async fn set_password_hash(&self, id: Uuid, hash: &str) -> Result<Option<User>, IamError>;
     /// Mark a user verified; returns `None` if absent.
     async fn set_verified(&self, id: Uuid, verified: bool) -> Result<Option<User>, IamError>;
-    /// Delete a user; `true` if a row was removed.
-    async fn delete(&self, id: Uuid) -> Result<bool, IamError>;
-    /// Count active users holding the admin role (for last-admin lockout safety).
-    async fn count_active_admins(&self) -> Result<u64, IamError>;
+
+    // The next three run the active-admin count check **and** the mutation inside
+    // one transaction that locks the active-admin rows (`SELECT … FOR UPDATE`), so
+    // the "≥1 active admin" invariant holds under concurrent removals.
+
+    /// Delete a user, refusing if it would remove the last active admin.
+    async fn delete_guarding_last_admin(&self, id: Uuid) -> Result<AdminGuard<()>, IamError>;
+    /// Deactivate a user, refusing if it would remove the last active admin.
+    async fn deactivate_guarding_last_admin(&self, id: Uuid) -> Result<AdminGuard<User>, IamError>;
+    /// Set a user's role, refusing a demotion that would remove the last active
+    /// admin (promotions never trigger the guard).
+    async fn set_role_guarding_last_admin(
+        &self,
+        id: Uuid,
+        role: Role,
+    ) -> Result<AdminGuard<User>, IamError>;
 }
 
 /// Persistence port for single-use email tokens.
@@ -45,6 +67,14 @@ pub trait EmailTokenRepository: Send + Sync {
     async fn find_by_hash(&self, token_hash: &str) -> Result<Option<EmailToken>, IamError>;
     /// Mark a token consumed at `at`. Returns `false` if already consumed/absent.
     async fn consume(&self, id: Uuid, at: DateTime<Utc>) -> Result<bool, IamError>;
+    /// Consume every still-valid token of `kind` for `user_id` (e.g. invalidate
+    /// all outstanding reset links once one is used). Returns how many it consumed.
+    async fn consume_all_for_user(
+        &self,
+        user_id: Uuid,
+        kind: EmailTokenKind,
+        at: DateTime<Utc>,
+    ) -> Result<u64, IamError>;
 }
 
 /// Outbound transactional email port. Implemented by the Resend adapter (real,

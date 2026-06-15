@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use async_trait::async_trait;
 
-use crate::domain::{EmailToken, EmailTokenRepository, IamError};
+use crate::domain::{EmailToken, EmailTokenKind, EmailTokenRepository, IamError};
 
 pub struct InMemoryEmailTokenRepository {
     tokens: RwLock<Vec<EmailToken>>,
@@ -58,5 +58,22 @@ impl EmailTokenRepository for InMemoryEmailTokenRepository {
             }
             _ => Ok(false),
         }
+    }
+
+    async fn consume_all_for_user(
+        &self,
+        user_id: Uuid,
+        kind: EmailTokenKind,
+        at: DateTime<Utc>,
+    ) -> Result<u64, IamError> {
+        let mut guard = self.tokens.write().map_err(|_| poisoned())?;
+        let mut count = 0;
+        for token in guard.iter_mut() {
+            if token.user_id == user_id && token.kind == kind && token.consumed_at.is_none() {
+                token.consumed_at = Some(at);
+                count += 1;
+            }
+        }
+        Ok(count)
     }
 }
