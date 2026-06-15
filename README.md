@@ -81,10 +81,11 @@ derive from (ADR 0004).
   requests are same-origin. If a future cross-origin client with credentials is needed, set
   `Access-Control-Allow-Credentials` against a specific origin (never `*`).
 
-  **Chat WS:** connect to `GET /ws/chat?room=<room>&token=<jwt>` (the `token` query param carries
-  the IAM JWT — browsers can't set headers on a WS handshake; `Authorization: Bearer` is also
-  accepted). Send `ChatSend` (`{ body }`) frames; receive `ChatMessage` frames broadcast to every
-  connection in the room. Each message is persisted to history.
+  **Chat WS:** connect to `GET /ws/chat?room=<room>&token=<jwt>`. Auth is resolved in order: the
+  `token` query param (browsers can't set headers on a WS handshake), then `Authorization: Bearer`,
+  then the `session` cookie (web — its JWT is httpOnly, so there's no JS token for the query param).
+  Send `ChatSend` (`{ body }`) frames; receive `ChatMessage` frames broadcast to every connection in
+  the room. Each message is persisted to history.
 
 ## Mobile artifact (`build.sh`)
 

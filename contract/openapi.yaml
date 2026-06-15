@@ -869,10 +869,12 @@ paths:
 
 
         Connect: `GET /ws/chat?room=<room>&token=<jwt>` with the standard
-        `Upgrade: websocket` headers. Auth: the `token` query param carries the IAM
-        JWT (browsers cannot set headers on a WS handshake); `Authorization: Bearer
-        <jwt>` is also accepted. Unauthenticated upgrades are rejected with `401`
-        before the protocol switch.
+        `Upgrade: websocket` headers. Auth is resolved in order: the `token` query
+        param carries the IAM JWT (browsers cannot set headers on a WS handshake);
+        then `Authorization: Bearer <jwt>` for non-browser clients; then the
+        `session` cookie (web, whose JWT lives in an httpOnly cookie with no JS
+        token available for the query param). Unauthenticated upgrades are rejected
+        with `401` before the protocol switch.
 
 
         Client → server frames: JSON matching `ChatSend` (`{ body }`). Each is
@@ -884,6 +886,7 @@ paths:
       tags: [chat]
       security:
         - bearerAuth: []
+        - cookieAuth: []
       parameters:
         - name: room
           in: query
