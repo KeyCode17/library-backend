@@ -30,6 +30,7 @@ struct ListQuery {
     shelf: Option<String>,
     row: Option<i32>,
     isbn: Option<String>,
+    q: Option<String>,
 }
 
 /// `GET /books` — public catalog listing in the `{ data, pagination }` envelope,
@@ -43,6 +44,7 @@ async fn list_books(State(state): State<CatalogState>, Query(query): Query<ListQ
         shelf: query.shelf,
         row: query.row,
         isbn: query.isbn,
+        query: query.q,
     };
 
     match state.list_books.execute(&filter, request).await {

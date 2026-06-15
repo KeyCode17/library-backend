@@ -67,6 +67,7 @@ mod tests {
             shelf: Some("Tech".to_owned()),
             row: None,
             isbn: None,
+            query: None,
         };
         let page = use_case()
             .execute(&filter, PageRequest::new(1, 20))
@@ -83,6 +84,7 @@ mod tests {
             shelf: Some("Tech".to_owned()),
             row: Some(4),
             isbn: None,
+            query: None,
         };
         let page = use_case()
             .execute(&filter, PageRequest::new(1, 20))
@@ -99,6 +101,7 @@ mod tests {
             shelf: Some("Nonexistent".to_owned()),
             row: None,
             isbn: None,
+            query: None,
         };
         let page = use_case()
             .execute(&filter, PageRequest::new(1, 20))
