@@ -1,8 +1,9 @@
 # library-backend
 
-Rust/Axum backend for the library project. **v1.1.0 — IAM v2: full user management, account
-self-service, and email (verification + password reset via Resend).** Deployment requires
-`DATABASE_URL`, `IAM_JWT_SECRET`, and `RESEND_API_KEY` (all fail-closed in production), plus FCM config for push.
+Rust/Axum backend for the library project. **v1.2.0 — completeness: idempotent upgrade
+migration, an active-loan unique-index backstop, `GET /books?q=` search, and httpOnly+SameSite
+session-cookie auth (alongside bearer).** Deployment requires `DATABASE_URL`, `IAM_JWT_SECRET`,
+and `RESEND_API_KEY` (all fail-closed in production), plus FCM config for push.
 
 ## What's built
 
