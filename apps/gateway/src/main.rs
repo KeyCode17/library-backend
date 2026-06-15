@@ -14,7 +14,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = persistence::db::connect(&database_url).await?;
     gateway::migrate(&db).await?;
 
-    let (app, scheduler) = gateway::build(db).await;
+    let email_sender = std::sync::Arc::new(iam::infrastructure::ResendEmailSender::from_env());
+    let (app, scheduler) = gateway::build(db, email_sender).await;
     tokio::spawn(scheduler.run());
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
