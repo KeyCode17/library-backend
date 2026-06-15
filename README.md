@@ -46,11 +46,12 @@ derive from (ADR 0004).
   | Method | Path                            | Auth   | Response                                          |
   |--------|---------------------------------|--------|---------------------------------------------------|
   | `GET`  | `/healthz`                      | public | `200 {"status":"ok"}`                             |
-  | `GET`  | `/books`                        | public | `200 { data: Book[], pagination }`                |
+  | `GET`  | `/books?q=&shelf=&row=&isbn=`   | public | `200 { data: Book[], pagination }` (text + finder)|
   | `GET`  | `/books/{id}`                   | public | `200 Book` / `404`                                |
   | `POST` | `/auth/register`                | public | `201 Principal` (creates a `member`)              |
-  | `POST` | `/auth/login`                   | public | `200 AuthToken` (JWT) / `401`                     |
-  | `GET`  | `/auth/me`                      | bearer | `200 Principal` / `401`                           |
+  | `POST` | `/auth/login`                   | public | `200 AuthToken` (JWT, also sets `session` cookie) |
+  | `POST` | `/auth/logout`                  | public | `204` (clears the `session` cookie)               |
+  | `GET`  | `/auth/me`                      | bearer/cookie | `200 Principal` / `401`                    |
   | `POST` | `/users/{id}/roles`             | admin  | `200 Principal` / `401` / `403` / `404`           |
   | `POST` | `/loans`                        | bearer | `201 Loan` / `401` / `404` / `409` (borrow)       |
   | `GET`  | `/loans`                        | bearer | `200 LoanList` (member: own; staff: all)          |
@@ -65,6 +66,20 @@ derive from (ADR 0004).
   `401` = unauthenticated; `403` = authenticated but lacking the role/ownership. Catalog stays
   public. Borrowing flips a book unavailable; returning flips it back. The due-date scheduler is
   internal (no endpoint) — it runs on a tokio interval and pushes reminders via FCM.
+
+  **Catalog search:** `GET /books?q=<text>` does a case-insensitive substring match over
+  title/author/ISBN, combinable with the `shelf`/`row`/`isbn` finder and pagination. An empty
+  result is a `200` with an empty page, not a `404`.
+
+  **Auth transports:** `POST /auth/login` returns the JWT in the body *and* sets it as a
+  `session` cookie (`HttpOnly; SameSite=Lax; Path=/; Max-Age=<ttl>`; `Secure` is added only in
+  production). Protected routes accept **either** `Authorization: Bearer <jwt>` (android — takes
+  precedence) **or** the `session` cookie (web). `POST /auth/logout` expires the cookie
+  (`Max-Age=0`); bearer clients just discard their token. **CSRF posture:** `SameSite=Lax` plus
+  JSON-only, non-GET state changes mitigates CSRF without a double-submit token (kept simple).
+  **CORS:** none is configured — the web app is first-party and proxies `/api` to the gateway, so
+  requests are same-origin. If a future cross-origin client with credentials is needed, set
+  `Access-Control-Allow-Credentials` against a specific origin (never `*`).
 
   **Chat WS:** connect to `GET /ws/chat?room=<room>&token=<jwt>` (the `token` query param carries
   the IAM JWT — browsers can't set headers on a WS handshake; `Authorization: Bearer` is also
