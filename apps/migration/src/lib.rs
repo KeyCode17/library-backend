@@ -16,6 +16,8 @@ mod m20260615_000003_create_loans_table;
 mod m20260615_000004_create_chat_messages_table;
 mod m20260615_000005_create_notification_tables;
 mod m20260615_000006_create_email_tokens_table;
+mod m20260615_000007_add_user_iam_v2_columns;
+mod m20260615_000008_active_loan_unique_index;
 
 pub use sea_orm_migration::prelude::*;
 
@@ -31,6 +33,8 @@ impl MigratorTrait for Migrator {
             Box::new(m20260615_000004_create_chat_messages_table::Migration),
             Box::new(m20260615_000005_create_notification_tables::Migration),
             Box::new(m20260615_000006_create_email_tokens_table::Migration),
+            Box::new(m20260615_000007_add_user_iam_v2_columns::Migration),
+            Box::new(m20260615_000008_active_loan_unique_index::Migration),
         ]
     }
 }
@@ -41,6 +45,6 @@ mod tests {
 
     #[test]
     fn registers_all_table_migrations() {
-        assert_eq!(Migrator::migrations().len(), 6);
+        assert_eq!(Migrator::migrations().len(), 8);
     }
 }

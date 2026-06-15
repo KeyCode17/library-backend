@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use axum::extract::{FromRef, FromRequestParts, Path, Query, State};
-use axum::http::header::AUTHORIZATION;
+use axum::http::header::{AUTHORIZATION, COOKIE, SET_COOKIE};
 use axum::http::request::Parts;
-use axum::http::StatusCode;
+use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
@@ -41,12 +41,36 @@ pub struct IamState {
     pub delete_user: Arc<DeleteUser>,
     pub assign_role: Arc<AssignRole>,
     pub tokens: Arc<dyn TokenService>,
+    /// Whether to add `Secure` to the session cookie (production only; dev is http).
+    pub cookie_secure: bool,
 }
 
 impl FromRef<IamState> for Arc<dyn TokenService> {
     fn from_ref(state: &IamState) -> Self {
         state.tokens.clone()
     }
+}
+
+const SESSION_COOKIE: &str = "session";
+
+/// Build the session cookie carrying the JWT (web auth; android uses the bearer
+/// header). HttpOnly so JS can't read it; SameSite=Lax for CSRF mitigation.
+fn session_cookie(jwt: &str, max_age_secs: i64, secure: bool) -> String {
+    let mut cookie =
+        format!("{SESSION_COOKIE}={jwt}; HttpOnly; SameSite=Lax; Path=/; Max-Age={max_age_secs}");
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    cookie
+}
+
+/// Build a cookie that immediately expires the session (logout).
+fn clear_session_cookie(secure: bool) -> String {
+    let mut cookie = format!("{SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0");
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    cookie
 }
 
 /// Extractor proving a valid bearer token. Depends only on `Arc<dyn TokenService>`
@@ -62,17 +86,33 @@ where
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let tokens = Arc::<dyn TokenService>::from_ref(state);
-        let token = parts
-            .headers
-            .get(AUTHORIZATION)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.strip_prefix("Bearer "))
-            .map(str::trim)
-            .filter(|token| !token.is_empty())
-            .ok_or_else(unauthorized)?;
-        let principal = tokens.verify(token).map_err(|_| unauthorized())?;
+        let token = extract_token(parts).ok_or_else(unauthorized)?;
+        let principal = tokens.verify(&token).map_err(|_| unauthorized())?;
         Ok(AuthenticatedUser(principal))
     }
+}
+
+/// Pull the JWT from the request: `Authorization: Bearer` (android) takes
+/// precedence, else the `session` cookie (web).
+fn extract_token(parts: &Parts) -> Option<String> {
+    if let Some(bearer) = parts
+        .headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+    {
+        return Some(bearer.to_owned());
+    }
+
+    let cookies = parts.headers.get(COOKIE)?.to_str().ok()?;
+    cookies
+        .split(';')
+        .map(str::trim)
+        .find_map(|cookie| cookie.strip_prefix("session="))
+        .filter(|token| !token.is_empty())
+        .map(str::to_owned)
 }
 
 fn unauthorized() -> Response {
@@ -104,9 +144,28 @@ async fn register(State(iam): State<IamState>, Json(body): Json<CredentialsReque
 
 async fn login(State(iam): State<IamState>, Json(body): Json<CredentialsRequest>) -> Response {
     match iam.login.execute(&body.email, &body.password).await {
-        Ok(issued) => Json(AuthTokenResponse::from(issued)).into_response(),
+        Ok(issued) => {
+            // Body token for android (bearer) AND a session cookie for web.
+            let cookie = session_cookie(&issued.token, issued.expires_in_secs, iam.cookie_secure);
+            let mut response = Json(AuthTokenResponse::from(issued)).into_response();
+            if let Ok(value) = HeaderValue::from_str(&cookie) {
+                response.headers_mut().insert(SET_COOKIE, value);
+            }
+            response
+        }
         Err(error) => error_response(&error),
     }
+}
+
+/// `POST /auth/logout` — clear the session cookie. (Bearer clients just drop the
+/// token client-side; this is a no-op for them.)
+async fn logout(State(iam): State<IamState>) -> Response {
+    let cookie = clear_session_cookie(iam.cookie_secure);
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    if let Ok(value) = HeaderValue::from_str(&cookie) {
+        response.headers_mut().insert(SET_COOKIE, value);
+    }
+    response
 }
 
 async fn me(
@@ -311,6 +370,7 @@ pub fn router(state: IamState) -> Router {
     Router::new()
         .route("/auth/register", post(register))
         .route("/auth/login", post(login))
+        .route("/auth/logout", post(logout))
         .route("/auth/me", get(me).patch(update_me).delete(delete_me))
         .route("/auth/change-password", post(change_password))
         .route("/auth/verify-email", post(verify_email))

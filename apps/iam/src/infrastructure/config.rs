@@ -86,7 +86,7 @@ impl IamConfig {
 }
 
 /// Whether the process is running in production (`APP_ENV`/`RUST_ENV`).
-pub(crate) fn is_production() -> bool {
+pub fn is_production() -> bool {
     let env = env_nonempty("APP_ENV")
         .or_else(|| env_nonempty("RUST_ENV"))
         .unwrap_or_default()

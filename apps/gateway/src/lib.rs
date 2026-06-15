@@ -175,6 +175,8 @@ async fn build_iam_state(db: DatabaseConnection, email_sender: Arc<dyn EmailSend
         delete_user: Arc::new(DeleteUser::new(users.clone())),
         assign_role: Arc::new(AssignRole::new(users)),
         tokens,
+        // `Secure` cookies only in production (dev is plain http).
+        cookie_secure: iam::infrastructure::config::is_production(),
     }
 }
 
@@ -289,9 +291,10 @@ fn notification_setup(
 mod tests {
     use super::*;
     use axum::body::Body;
-    use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
+    use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, COOKIE, SET_COOKIE};
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
+    use persistence::sea_orm::ConnectionTrait;
     use serde_json::{json, Value};
     use std::sync::Once;
     use testcontainers_modules::postgres::Postgres as PgImage;
@@ -395,6 +398,51 @@ mod tests {
         (status, value)
     }
 
+    /// Like `call`, but also sends an optional `Cookie` header and surfaces the
+    /// response `Set-Cookie` header — needed to exercise the cookie auth path.
+    async fn raw_call(
+        app: &Router,
+        method: &str,
+        uri: &str,
+        bearer: Option<&str>,
+        cookie: Option<&str>,
+        body: Option<Value>,
+    ) -> (StatusCode, Option<String>, Value) {
+        let mut builder = Request::builder().method(method).uri(uri);
+        if let Some(token) = bearer {
+            builder = builder.header(AUTHORIZATION, format!("Bearer {token}"));
+        }
+        if let Some(cookie) = cookie {
+            builder = builder.header(COOKIE, cookie);
+        }
+        let request = match body {
+            Some(value) => builder
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(value.to_string()))
+                .expect("request"),
+            None => builder.body(Body::empty()).expect("request"),
+        };
+        let response = app.clone().oneshot(request).await.expect("responds");
+        let status = response.status();
+        let set_cookie = response
+            .headers()
+            .get(SET_COOKIE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes();
+        let value = if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes).expect("json")
+        };
+        (status, set_cookie, value)
+    }
+
     async fn member_token(app: &Router, email: &str) -> String {
         call(
             app,
@@ -450,6 +498,45 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["pagination"]["total"], 1);
         assert_eq!(body["data"][0]["id"], CLEAN_CODE_ID);
+    }
+
+    #[tokio::test]
+    async fn text_search_matches_title_and_author_case_insensitively() {
+        let h = spawn().await;
+
+        // Title match ("Clean Code"), case-insensitive.
+        let (status, by_title) = call(&h.app, "GET", "/books?q=CLEAN", None, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(by_title["pagination"]["total"].as_u64().expect("total") >= 1);
+        assert!(by_title["data"]
+            .as_array()
+            .expect("data")
+            .iter()
+            .any(|book| book["title"] == "Clean Code"));
+
+        // Author match ("Robert C. Martin") via a substring.
+        let (_, by_author) = call(&h.app, "GET", "/books?q=martin", None, None).await;
+        assert!(by_author["pagination"]["total"].as_u64().expect("total") >= 1);
+        assert!(by_author["data"]
+            .as_array()
+            .expect("data")
+            .iter()
+            .all(|book| book["author"].as_str().expect("author").contains("Martin")));
+
+        // No match → empty page, still 200.
+        let (empty_status, empty) =
+            call(&h.app, "GET", "/books?q=zzz-no-such-book", None, None).await;
+        assert_eq!(empty_status, StatusCode::OK);
+        assert_eq!(empty["pagination"]["total"], 0);
+        assert_eq!(empty["data"].as_array().expect("data").len(), 0);
+
+        // Combinable with the shelf finder.
+        let (_, combined) = call(&h.app, "GET", "/books?q=code&shelf=Tech", None, None).await;
+        assert!(combined["data"]
+            .as_array()
+            .expect("data")
+            .iter()
+            .all(|book| book["shelf"] == "Tech"));
     }
 
     #[tokio::test]
@@ -519,6 +606,120 @@ mod tests {
         statuses.sort_by_key(|s| s.as_u16());
         // Exactly one created, exactly one conflict — never two active loans.
         assert_eq!(statuses, [StatusCode::CREATED, StatusCode::CONFLICT]);
+    }
+
+    #[tokio::test]
+    async fn alter_migration_upgrades_a_pre_iam_v2_database() {
+        init_env();
+        let container = PgImage::default().start().await.expect("start postgres");
+        let port = container.get_host_port_ipv4(5432).await.expect("host port");
+        let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
+        let db = persistence::db::connect(&url).await.expect("connect");
+
+        // Simulate a 1.0.0-era database: a `users` table WITHOUT the IAM v2
+        // columns, plus a migration ledger that marks the original create-users
+        // migration as already applied (so the upgrade can't re-create the table).
+        db.execute_unprepared(
+            "CREATE TABLE seaql_migrations (\
+                 version VARCHAR NOT NULL PRIMARY KEY, \
+                 applied_at BIGINT NOT NULL)",
+        )
+        .await
+        .expect("ledger");
+        db.execute_unprepared(
+            "INSERT INTO seaql_migrations (version, applied_at) \
+             VALUES ('m20260615_000002_create_users_table', 0)",
+        )
+        .await
+        .expect("mark create-users applied");
+        db.execute_unprepared(
+            "CREATE TABLE users (\
+                 id UUID PRIMARY KEY, \
+                 email VARCHAR NOT NULL UNIQUE, \
+                 password_hash VARCHAR NOT NULL, \
+                 role VARCHAR NOT NULL)",
+        )
+        .await
+        .expect("legacy users table");
+        db.execute_unprepared(
+            "INSERT INTO users (id, email, password_hash, role) \
+             VALUES ('00000000-0000-4000-8000-0000000000aa', 'legacy@x.test', 'hash', 'member')",
+        )
+        .await
+        .expect("legacy row");
+
+        // Upgrade. The ALTER migration must add the missing columns to the
+        // existing table (not fail with "column users.verified does not exist").
+        migrate(&db).await.expect("upgrade migrates");
+
+        // New columns now exist and the legacy row carries the defaults.
+        let alive = db
+            .execute_unprepared(
+                "SELECT verified, active, created_at FROM users WHERE email = 'legacy@x.test'",
+            )
+            .await;
+        assert!(alive.is_ok(), "iam v2 columns present after upgrade");
+
+        // Idempotent: running the migrator again is a clean no-op.
+        migrate(&db).await.expect("re-migrate is a no-op");
+
+        drop(container);
+    }
+
+    #[tokio::test]
+    async fn login_sets_session_cookie_and_extractor_accepts_cookie_or_bearer() {
+        let h = spawn().await;
+        call(
+            &h.app,
+            "POST",
+            "/auth/register",
+            None,
+            Some(json!({"email": "cookie@example.com", "password": "password123"})),
+        )
+        .await;
+
+        // Login returns the bearer token in the body AND sets the session cookie.
+        let (login_status, set_cookie, login_body) = raw_call(
+            &h.app,
+            "POST",
+            "/auth/login",
+            None,
+            None,
+            Some(json!({"email": "cookie@example.com", "password": "password123"})),
+        )
+        .await;
+        assert_eq!(login_status, StatusCode::OK);
+        let bearer = login_body["token"].as_str().expect("body token").to_owned();
+        let cookie = set_cookie.expect("Set-Cookie present on login");
+        assert!(cookie.starts_with("session="));
+        assert!(cookie.contains("HttpOnly"));
+        assert!(cookie.contains("SameSite=Lax"));
+        // Dev (non-production) must NOT mark the cookie Secure.
+        assert!(!cookie.contains("Secure"));
+        let session_pair = cookie.split(';').next().expect("cookie pair").to_owned();
+
+        // Protected endpoint via the bearer header.
+        let (via_bearer, _, _) =
+            raw_call(&h.app, "GET", "/auth/me", Some(&bearer), None, None).await;
+        assert_eq!(via_bearer, StatusCode::OK);
+
+        // Same endpoint via the cookie alone.
+        let (via_cookie, _, me_body) =
+            raw_call(&h.app, "GET", "/auth/me", None, Some(&session_pair), None).await;
+        assert_eq!(via_cookie, StatusCode::OK);
+        assert_eq!(me_body["email"], "cookie@example.com");
+
+        // Neither credential → 401.
+        let (anon, _, _) = raw_call(&h.app, "GET", "/auth/me", None, None, None).await;
+        assert_eq!(anon, StatusCode::UNAUTHORIZED);
+
+        // Logout clears the cookie (Max-Age=0).
+        let (logout_status, logout_cookie, _) =
+            raw_call(&h.app, "POST", "/auth/logout", None, None, None).await;
+        assert_eq!(logout_status, StatusCode::NO_CONTENT);
+        let cleared = logout_cookie.expect("Set-Cookie present on logout");
+        assert!(cleared.starts_with("session="));
+        assert!(cleared.contains("Max-Age=0"));
     }
 
     #[tokio::test]

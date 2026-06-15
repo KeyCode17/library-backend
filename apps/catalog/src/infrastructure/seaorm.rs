@@ -4,9 +4,9 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use persistence::entity::book;
-use persistence::sea_orm::sea_query::Expr;
+use persistence::sea_orm::sea_query::{Expr, Func};
 use persistence::sea_orm::{
-    ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, IntoActiveModel,
+    ActiveModelTrait, ColumnTrait, Condition, DatabaseConnection, EntityTrait, IntoActiveModel,
     PaginatorTrait, QueryFilter, QueryOrder, Set,
 };
 
@@ -56,6 +56,23 @@ impl BookRepository for SeaOrmBookRepository {
         }
         if let Some(isbn) = &filter.isbn {
             query = query.filter(book::Column::Isbn.eq(isbn.clone()));
+        }
+        if let Some(text) = &filter.query {
+            // Case-insensitive substring over title/author/isbn. The needle is a
+            // bound parameter; `lower()` is applied to the column (no built SQL).
+            let needle = format!("%{}%", text.to_lowercase());
+            query = query.filter(
+                Condition::any()
+                    .add(
+                        Expr::expr(Func::lower(Expr::col(book::Column::Title)))
+                            .like(needle.clone()),
+                    )
+                    .add(
+                        Expr::expr(Func::lower(Expr::col(book::Column::Author)))
+                            .like(needle.clone()),
+                    )
+                    .add(Expr::expr(Func::lower(Expr::col(book::Column::Isbn))).like(needle)),
+            );
         }
 
         let paginator = query
