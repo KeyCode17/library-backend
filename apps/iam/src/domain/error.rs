@@ -24,6 +24,16 @@ pub enum IamError {
     Hashing(String),
     /// Token issuing/verification backend failure.
     Token(String),
+    /// An email/verification/reset token was unknown or malformed.
+    InvalidToken,
+    /// The token has expired.
+    TokenExpired,
+    /// The token was already used (single-use).
+    TokenConsumed,
+    /// The action would remove the last admin (or self-lockout) — prevented.
+    LastAdmin,
+    /// Outbound email failed (best-effort; not surfaced on enumeration-safe paths).
+    Email(String),
     /// User store failure.
     Repository(String),
 }
@@ -40,6 +50,11 @@ impl fmt::Display for IamError {
             IamError::InvalidEmail => "invalid email",
             IamError::Hashing(_) => "hashing failure",
             IamError::Token(_) => "token failure",
+            IamError::InvalidToken => "invalid token",
+            IamError::TokenExpired => "token expired",
+            IamError::TokenConsumed => "token already used",
+            IamError::LastAdmin => "cannot remove the last admin",
+            IamError::Email(_) => "email delivery failure",
             IamError::Repository(_) => "repository failure",
         };
         f.write_str(message)

@@ -1,12 +1,12 @@
-//! In-memory `UserRepository`. Stand-in until the Postgres/SeaORM adapter is
-//! wired (the users table schema lives in the `migration` crate).
+//! In-memory `UserRepository` for the contexts' DB-free unit tests.
 
 use std::sync::RwLock;
 
-use async_trait::async_trait;
 use uuid::Uuid;
 
-use crate::domain::{IamError, Role, User, UserRepository};
+use async_trait::async_trait;
+
+use crate::domain::{IamError, Page, PageRequest, Role, User, UserRepository};
 
 pub struct InMemoryUserRepository {
     users: RwLock<Vec<User>>,
@@ -19,7 +19,6 @@ impl InMemoryUserRepository {
         }
     }
 
-    /// Build a store pre-populated with `initial` users (e.g. a seeded admin).
     pub fn seeded_with(initial: Vec<User>) -> Self {
         Self {
             users: RwLock::new(initial),
@@ -73,5 +72,89 @@ impl UserRepository for InMemoryUserRepository {
             }
             None => Ok(None),
         }
+    }
+
+    async fn list(&self, request: PageRequest) -> Result<Page<User>, IamError> {
+        let all: Vec<User> = {
+            let guard = self.users.read().map_err(|_| poisoned())?;
+            guard.clone()
+        };
+        let total = all.len() as u64;
+        let items = all
+            .into_iter()
+            .skip(request.offset() as usize)
+            .take(request.page_size() as usize)
+            .collect();
+        Ok(Page {
+            items,
+            page: request.page(),
+            page_size: request.page_size(),
+            total,
+        })
+    }
+
+    async fn set_email(&self, id: Uuid, email: &str) -> Result<Option<User>, IamError> {
+        let mut guard = self.users.write().map_err(|_| poisoned())?;
+        if guard
+            .iter()
+            .any(|user| user.email == email && user.id != id)
+        {
+            return Err(IamError::EmailAlreadyExists);
+        }
+        match guard.iter_mut().find(|user| user.id == id) {
+            Some(user) => {
+                user.email = email.to_owned();
+                Ok(Some(user.clone()))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn set_active(&self, id: Uuid, active: bool) -> Result<Option<User>, IamError> {
+        let mut guard = self.users.write().map_err(|_| poisoned())?;
+        match guard.iter_mut().find(|user| user.id == id) {
+            Some(user) => {
+                user.active = active;
+                Ok(Some(user.clone()))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn set_password_hash(&self, id: Uuid, hash: &str) -> Result<Option<User>, IamError> {
+        let mut guard = self.users.write().map_err(|_| poisoned())?;
+        match guard.iter_mut().find(|user| user.id == id) {
+            Some(user) => {
+                user.password_hash = hash.to_owned();
+                Ok(Some(user.clone()))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn set_verified(&self, id: Uuid, verified: bool) -> Result<Option<User>, IamError> {
+        let mut guard = self.users.write().map_err(|_| poisoned())?;
+        match guard.iter_mut().find(|user| user.id == id) {
+            Some(user) => {
+                user.verified = verified;
+                Ok(Some(user.clone()))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn delete(&self, id: Uuid) -> Result<bool, IamError> {
+        let mut guard = self.users.write().map_err(|_| poisoned())?;
+        let before = guard.len();
+        guard.retain(|user| user.id != id);
+        Ok(guard.len() != before)
+    }
+
+    async fn count_active_admins(&self) -> Result<u64, IamError> {
+        let guard = self.users.read().map_err(|_| poisoned())?;
+        Ok(guard
+            .iter()
+            .filter(|user| user.role == Role::Admin && user.active)
+            .count() as u64)
     }
 }

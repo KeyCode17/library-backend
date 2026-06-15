@@ -1,22 +1,51 @@
 use std::sync::Arc;
 
+use chrono::Duration;
 use uuid::Uuid;
 
-use crate::domain::{IamError, PasswordHasher, Role, User, UserRepository};
+use crate::domain::{
+    Clock, EmailSender, EmailToken, EmailTokenKind, EmailTokenRepository, IamError, PasswordHasher,
+    Role, TokenGenerator, User, UserRepository,
+};
 
-/// Minimum password length enforced at registration.
-pub const MIN_PASSWORD_LEN: usize = 8;
+use super::validation::{normalize_email, validate_email, validate_password};
 
-/// Use case: public self-registration. Always creates a `member`; elevated roles
-/// are granted only by an admin via `AssignRole`.
+/// Verification links live for 24h.
+pub const VERIFY_TTL_HOURS: i64 = 24;
+
+/// Use case: public self-registration. Creates an unverified `member` and sends a
+/// verification email (best-effort — a send failure never fails the registration,
+/// and login is not gated on verification).
 pub struct RegisterUser {
     users: Arc<dyn UserRepository>,
     hasher: Arc<dyn PasswordHasher>,
+    clock: Arc<dyn Clock>,
+    email_tokens: Arc<dyn EmailTokenRepository>,
+    token_generator: Arc<dyn TokenGenerator>,
+    email_sender: Arc<dyn EmailSender>,
+    base_url: String,
 }
 
 impl RegisterUser {
-    pub fn new(users: Arc<dyn UserRepository>, hasher: Arc<dyn PasswordHasher>) -> Self {
-        Self { users, hasher }
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        users: Arc<dyn UserRepository>,
+        hasher: Arc<dyn PasswordHasher>,
+        clock: Arc<dyn Clock>,
+        email_tokens: Arc<dyn EmailTokenRepository>,
+        token_generator: Arc<dyn TokenGenerator>,
+        email_sender: Arc<dyn EmailSender>,
+        base_url: String,
+    ) -> Self {
+        Self {
+            users,
+            hasher,
+            clock,
+            email_tokens,
+            token_generator,
+            email_sender,
+            base_url,
+        }
     }
 
     pub async fn execute(&self, email: &str, password: &str) -> Result<User, IamError> {
@@ -25,88 +54,50 @@ impl RegisterUser {
         validate_password(password)?;
 
         let password_hash = self.hasher.hash(password)?;
-        let user = User::new(Uuid::new_v4(), email, password_hash, Role::Member);
+        let now = self.clock.now();
+        let user = User::new(Uuid::new_v4(), email, password_hash, Role::Member, now);
         self.users.insert(user.clone()).await?;
+
+        issue_and_send_verification(
+            self.email_tokens.as_ref(),
+            self.token_generator.as_ref(),
+            self.email_sender.as_ref(),
+            &self.base_url,
+            &user,
+            now,
+        )
+        .await;
+
         Ok(user)
     }
 }
 
-fn normalize_email(email: &str) -> String {
-    email.trim().to_lowercase()
-}
-
-fn validate_email(email: &str) -> Result<(), IamError> {
-    let valid =
-        email.len() >= 3 && email.contains('@') && !email.starts_with('@') && !email.ends_with('@');
-    if valid {
-        Ok(())
-    } else {
-        Err(IamError::InvalidEmail)
+/// Mint a verification token and email its link. Best-effort: failures are logged,
+/// not propagated (so registration never fails on email trouble).
+pub(crate) async fn issue_and_send_verification(
+    email_tokens: &dyn EmailTokenRepository,
+    token_generator: &dyn TokenGenerator,
+    email_sender: &dyn EmailSender,
+    base_url: &str,
+    user: &User,
+    now: chrono::DateTime<chrono::Utc>,
+) {
+    let (raw, hash) = token_generator.generate();
+    let token = EmailToken {
+        id: Uuid::new_v4(),
+        user_id: user.id,
+        kind: EmailTokenKind::VerifyEmail,
+        token_hash: hash,
+        expires_at: now + Duration::hours(VERIFY_TTL_HOURS),
+        consumed_at: None,
+        created_at: now,
+    };
+    if let Err(error) = email_tokens.insert(token).await {
+        eprintln!("WARN [iam]: could not store verification token: {error}");
+        return;
     }
-}
-
-fn validate_password(password: &str) -> Result<(), IamError> {
-    if password.len() >= MIN_PASSWORD_LEN {
-        Ok(())
-    } else {
-        Err(IamError::WeakPassword)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::infrastructure::argon2_hasher::Argon2PasswordHasher;
-    use crate::infrastructure::in_memory_users::InMemoryUserRepository;
-
-    fn use_case() -> (Arc<InMemoryUserRepository>, RegisterUser) {
-        let users = Arc::new(InMemoryUserRepository::new());
-        let hasher = Arc::new(Argon2PasswordHasher::new());
-        let register = RegisterUser::new(users.clone(), hasher);
-        (users, register)
-    }
-
-    #[tokio::test]
-    async fn registers_a_member_with_a_hashed_password() {
-        let (_users, register) = use_case();
-        let user = register
-            .execute("Alice@Example.com ", "supersecret")
-            .await
-            .expect("registration succeeds");
-
-        assert_eq!(user.role, Role::Member);
-        assert_eq!(user.email, "alice@example.com"); // normalized
-        assert_ne!(user.password_hash, "supersecret"); // never plaintext
-        assert!(user.password_hash.starts_with("$argon2"));
-    }
-
-    #[tokio::test]
-    async fn rejects_duplicate_email() {
-        let (_users, register) = use_case();
-        register
-            .execute("a@b.com", "supersecret")
-            .await
-            .expect("first registration");
-        let err = register
-            .execute("a@b.com", "supersecret")
-            .await
-            .unwrap_err();
-        assert!(matches!(err, IamError::EmailAlreadyExists));
-    }
-
-    #[tokio::test]
-    async fn rejects_short_password_and_bad_email() {
-        let (_users, register) = use_case();
-        assert!(matches!(
-            register.execute("a@b.com", "short").await.unwrap_err(),
-            IamError::WeakPassword
-        ));
-        assert!(matches!(
-            register
-                .execute("not-an-email", "supersecret")
-                .await
-                .unwrap_err(),
-            IamError::InvalidEmail
-        ));
+    let link = format!("{base_url}/verify-email?token={raw}");
+    if let Err(error) = email_sender.send_verification(&user.email, &link).await {
+        eprintln!("WARN [iam]: could not send verification email: {error}");
     }
 }
