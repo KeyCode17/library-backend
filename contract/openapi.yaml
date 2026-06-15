@@ -82,9 +82,17 @@ paths:
             client resolve a scanned barcode to a book server-side.
           schema:
             type: string
+        - name: q
+          in: query
+          required: false
+          description: >
+            Free-text search: case-insensitive substring match over title, author,
+            and ISBN. Combinable with the other filters and pagination.
+          schema:
+            type: string
       responses:
         "200":
-          description: A page of books (after any shelf/row/ISBN filtering).
+          description: A page of books (after any shelf/row/ISBN/text filtering).
           content:
             application/json:
               schema:
@@ -168,6 +176,11 @@ paths:
     post:
       operationId: login
       summary: Exchange credentials for a JWT
+      description: >
+        Returns the JWT in the body (android sends it as `Authorization: Bearer`)
+        AND sets it as an `HttpOnly`, `SameSite=Lax` `session` cookie (web; `Secure`
+        is added in production). Protected endpoints accept EITHER the bearer header
+        (which takes precedence) or the cookie.
       tags: [iam]
       requestBody:
         required: true
@@ -177,7 +190,8 @@ paths:
               $ref: "#/components/schemas/Credentials"
       responses:
         "200":
-          description: A signed bearer token.
+          description: >
+            A signed bearer token (also set as the `session` cookie via Set-Cookie).
           content:
             application/json:
               schema:
@@ -188,6 +202,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+
+  /auth/logout:
+    post:
+      operationId: logout
+      summary: Clear the session cookie
+      description: >
+        Expires the `session` cookie (`Set-Cookie: session=; Max-Age=0`). Bearer
+        clients simply discard their token; this is a no-op for them.
+      tags: [iam]
+      responses:
+        "204":
+          description: Session cleared.
 
   /auth/me:
     get:
@@ -967,7 +993,21 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: "JWT issued by POST /auth/login, sent in the Authorization header as a Bearer token."
+      description: >
+        JWT issued by POST /auth/login, sent in the Authorization header as a Bearer
+        token (android). Takes precedence over the cookie when both are present.
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: session
+      description: >
+        Same JWT, set by POST /auth/login as an HttpOnly, SameSite=Lax cookie
+        (`Secure` in production), cleared by POST /auth/logout (web). Protected
+        operations accept bearerAuth OR cookieAuth. CSRF posture: SameSite=Lax plus
+        JSON-only, non-GET state changes mitigate CSRF; no double-submit token is
+        used (kept simple). CORS is first-party only (the web dev server proxies
+        `/api`); if cross-origin with credentials is ever needed, set
+        Access-Control-Allow-Credentials with a specific origin (never `*`).
   schemas:
     Book:
       type: object
