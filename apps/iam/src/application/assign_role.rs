@@ -2,13 +2,13 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use crate::domain::{AuthPrincipal, IamError, Permission, Role, User, UserRepository};
+use crate::domain::{AdminGuard, AuthPrincipal, IamError, Permission, Role, User, UserRepository};
 
 /// Use case: an admin assigns a role to a user.
 ///
-/// Authorization lives here, in the application (the server-side authority) — not
-/// only at the HTTP edge. Demoting the last admin, or an admin demoting
-/// themselves, is refused to prevent lockout.
+/// Authorization lives here (server-side authority). Self-demotion is refused up
+/// front; the last-admin invariant is enforced transactionally in the repository
+/// so it holds under concurrency.
 pub struct AssignRole {
     users: Arc<dyn UserRepository>,
 }
@@ -27,26 +27,19 @@ impl AssignRole {
         if !actor.role.grants(Permission::ManageUsers) {
             return Err(IamError::Forbidden);
         }
-
-        let target = self
-            .users
-            .find_by_id(target_id)
-            .await?
-            .ok_or(IamError::UserNotFound)?;
-
-        if target.role == Role::Admin && new_role != Role::Admin {
-            // Demoting an admin: never the caller themselves, never the last one.
-            if target.id == actor.user_id {
-                return Err(IamError::LastAdmin);
-            }
-            if self.users.count_active_admins().await? <= 1 {
-                return Err(IamError::LastAdmin);
-            }
+        // An admin cannot demote themselves out of admin.
+        if actor.role == Role::Admin && target_id == actor.user_id && new_role != Role::Admin {
+            return Err(IamError::LastAdmin);
         }
 
-        self.users
-            .set_role(target_id, new_role)
+        match self
+            .users
+            .set_role_guarding_last_admin(target_id, new_role)
             .await?
-            .ok_or(IamError::UserNotFound)
+        {
+            AdminGuard::Done(user) => Ok(user),
+            AdminGuard::LastAdmin => Err(IamError::LastAdmin),
+            AdminGuard::NotFound => Err(IamError::UserNotFound),
+        }
     }
 }

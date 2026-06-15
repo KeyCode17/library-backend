@@ -62,6 +62,13 @@ impl ResetPassword {
             .set_password_hash(token.user_id, &new_hash)
             .await?
             .ok_or(IamError::UserNotFound)?;
+
+        // Invalidate any other outstanding reset tokens for this user so a second
+        // leaked reset link can't be reused within its window.
+        let _ = self
+            .email_tokens
+            .consume_all_for_user(token.user_id, EmailTokenKind::PasswordReset, now)
+            .await;
         Ok(())
     }
 }
@@ -182,6 +189,35 @@ mod tests {
         assert!(matches!(
             f.reset.execute("deadbeef", "newpassword1").await,
             Err(IamError::InvalidToken)
+        ));
+    }
+
+    #[tokio::test]
+    async fn using_one_reset_token_invalidates_the_others() {
+        let f = fixture();
+        let first = store_token(
+            &f,
+            EmailTokenKind::PasswordReset,
+            now() + Duration::hours(1),
+        )
+        .await;
+        let second = store_token(
+            &f,
+            EmailTokenKind::PasswordReset,
+            now() + Duration::hours(1),
+        )
+        .await;
+
+        // Use the first token successfully.
+        f.reset
+            .execute(&first, "newpassword1")
+            .await
+            .expect("first reset");
+
+        // The other outstanding reset token is now rejected (already consumed).
+        assert!(matches!(
+            f.reset.execute(&second, "another12345").await,
+            Err(IamError::TokenConsumed)
         ));
     }
 }

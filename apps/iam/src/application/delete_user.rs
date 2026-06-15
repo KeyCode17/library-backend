@@ -2,9 +2,10 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use crate::domain::{AuthPrincipal, IamError, Permission, Role, UserRepository};
+use crate::domain::{AdminGuard, AuthPrincipal, IamError, Permission, UserRepository};
 
-/// Use case: admin deletes a user. Deleting yourself or the last admin is refused.
+/// Use case: admin deletes a user. Deleting yourself is refused up front; the
+/// last-admin invariant is enforced transactionally in the repository.
 pub struct DeleteUser {
     users: Arc<dyn UserRepository>,
 }
@@ -18,23 +19,14 @@ impl DeleteUser {
         if !actor.role.grants(Permission::ManageUsers) {
             return Err(IamError::Forbidden);
         }
-
-        let target = self
-            .users
-            .find_by_id(target_id)
-            .await?
-            .ok_or(IamError::UserNotFound)?;
-
-        if target.id == actor.user_id {
-            return Err(IamError::LastAdmin);
-        }
-        if target.role == Role::Admin && self.users.count_active_admins().await? <= 1 {
-            return Err(IamError::LastAdmin);
+        if target_id == actor.user_id {
+            return Err(IamError::LastAdmin); // use DELETE /auth/me to delete yourself
         }
 
-        if !self.users.delete(target_id).await? {
-            return Err(IamError::UserNotFound);
+        match self.users.delete_guarding_last_admin(target_id).await? {
+            AdminGuard::Done(()) => Ok(()),
+            AdminGuard::LastAdmin => Err(IamError::LastAdmin),
+            AdminGuard::NotFound => Err(IamError::UserNotFound),
         }
-        Ok(())
     }
 }

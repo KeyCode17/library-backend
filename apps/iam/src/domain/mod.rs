@@ -12,8 +12,8 @@ pub use email_token::{EmailToken, EmailTokenKind};
 pub use error::IamError;
 pub use pagination::{Page, PageRequest};
 pub use ports::{
-    Clock, EmailSender, EmailTokenRepository, IssuedToken, PasswordHasher, TokenGenerator,
-    TokenService, UserRepository,
+    AdminGuard, Clock, EmailSender, EmailTokenRepository, IssuedToken, PasswordHasher,
+    TokenGenerator, TokenService, UserRepository,
 };
 pub use principal::AuthPrincipal;
 pub use role::{Permission, Role};

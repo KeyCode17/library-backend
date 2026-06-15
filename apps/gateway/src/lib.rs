@@ -782,4 +782,69 @@ mod tests {
             StatusCode::BAD_REQUEST
         );
     }
+
+    #[tokio::test]
+    async fn concurrent_admin_removals_keep_at_least_one_admin() {
+        let h = spawn().await;
+        let admin_a = admin_token(&h.app).await;
+
+        // Promote a second admin so there are exactly two.
+        let (created, b_body) = call(
+            &h.app,
+            "POST",
+            "/users",
+            Some(&admin_a),
+            Some(
+                json!({"email": "admin-b@example.com", "password": "password123", "role": "admin"}),
+            ),
+        )
+        .await;
+        assert_eq!(created, StatusCode::CREATED);
+        let b_id = b_body["id"].as_str().expect("b id").to_owned();
+        let (_, a_me) = call(&h.app, "GET", "/auth/me", Some(&admin_a), None).await;
+        let a_id = a_me["id"].as_str().expect("a id").to_owned();
+
+        let (_, b_login) = call(
+            &h.app,
+            "POST",
+            "/auth/login",
+            None,
+            Some(json!({"email": "admin-b@example.com", "password": "password123"})),
+        )
+        .await;
+        let admin_b = b_login["token"].as_str().expect("b token").to_owned();
+
+        // Each admin tries to delete the other, simultaneously. The transactional
+        // guard must let exactly one through (the other would drop admins to zero).
+        let (app1, app2) = (h.app.clone(), h.app.clone());
+        let task_a = tokio::spawn(async move {
+            call(
+                &app1,
+                "DELETE",
+                &format!("/users/{b_id}"),
+                Some(&admin_a),
+                None,
+            )
+            .await
+            .0
+        });
+        let task_b = tokio::spawn(async move {
+            call(
+                &app2,
+                "DELETE",
+                &format!("/users/{a_id}"),
+                Some(&admin_b),
+                None,
+            )
+            .await
+            .0
+        });
+        let s_a = task_a.await.expect("task a");
+        let s_b = task_b.await.expect("task b");
+
+        let mut statuses = [s_a, s_b];
+        statuses.sort_by_key(|s| s.as_u16());
+        // Exactly one deletion succeeds; the other is refused as the last admin.
+        assert_eq!(statuses, [StatusCode::NO_CONTENT, StatusCode::CONFLICT]);
+    }
 }
