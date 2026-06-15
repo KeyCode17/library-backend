@@ -21,16 +21,23 @@ pub struct WsQuery {
 
 /// `GET /ws/chat?room=<room>&token=<jwt>` — authenticate, then upgrade.
 ///
-/// Auth: a `token` query param (a browser cannot set headers on a WS handshake),
-/// or `Authorization: Bearer <jwt>` for non-browser clients. Unauthenticated
-/// upgrades are rejected with `401` before the protocol switch.
+/// Auth, in order: a `token` query param (a browser cannot set headers on a WS
+/// handshake), `Authorization: Bearer <jwt>` for non-browser clients, or the
+/// `session` cookie (web, which holds the JWT in an httpOnly cookie with no JS
+/// token to put in the query param). Unauthenticated upgrades are rejected with
+/// `401` before the protocol switch.
 pub async fn upgrade(
     State(state): State<ChatState>,
     Query(query): Query<WsQuery>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
-    let Some(token) = query.token.clone().or_else(|| bearer(&headers)) else {
+    let Some(token) = query
+        .token
+        .clone()
+        .or_else(|| bearer(&headers))
+        .or_else(|| session_cookie(&headers))
+    else {
         return (StatusCode::UNAUTHORIZED, "missing token").into_response();
     };
     let Ok(principal) = state.tokens.verify(&token) else {
@@ -47,6 +54,19 @@ fn bearer(headers: &HeaderMap) -> Option<String> {
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
         .map(|token| token.trim().to_owned())
+        .filter(|token| !token.is_empty())
+}
+
+/// Extract the JWT from the `session` cookie set by `POST /auth/login`.
+fn session_cookie(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(axum::http::header::COOKIE)
+        .and_then(|value| value.to_str().ok())?
+        .split(';')
+        .map(str::trim)
+        .find_map(|cookie| cookie.strip_prefix("session="))
+        .filter(|token| !token.is_empty())
+        .map(str::to_owned)
 }
 
 async fn serve_socket(socket: WebSocket, state: ChatState, room: String, principal: AuthPrincipal) {
@@ -215,5 +235,44 @@ mod tests {
         let url = format!("ws://{}/ws/chat?room=lib&token=not.a.jwt", server.addr);
         let result = tokio_tungstenite::connect_async(&url).await;
         assert!(result.is_err(), "handshake with a bad token must fail");
+    }
+
+    #[tokio::test]
+    async fn session_cookie_authenticates_the_upgrade() {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        use tokio_tungstenite::tungstenite::http::header::COOKIE;
+
+        let server = spawn().await;
+        let carol = Uuid::new_v4();
+        let token = token_for(&server, carol);
+
+        // Web has no JS token for the query param — only the httpOnly cookie.
+        let url = format!("ws://{}/ws/chat?room=lib", server.addr);
+        let mut request = url.into_client_request().expect("request");
+        request.headers_mut().insert(
+            COOKIE,
+            format!("session={token}").parse().expect("cookie header"),
+        );
+
+        let (mut conn, _) = tokio_tungstenite::connect_async(request)
+            .await
+            .expect("cookie handshake connects");
+
+        // Prove the principal was extracted from the cookie: a sent message is
+        // persisted under carol's id.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        conn.send(ClientMessage::Text(r#"{"body":"via cookie"}"#.into()))
+            .await
+            .expect("sends");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        let page = server
+            .messages
+            .list_by_room("lib", PageRequest::new(1, 50))
+            .await
+            .expect("history");
+        assert_eq!(page.total, 1);
+        assert_eq!(page.items[0].body, "via cookie");
+        assert_eq!(page.items[0].user_id, carol);
     }
 }
