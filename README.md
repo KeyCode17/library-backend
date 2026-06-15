@@ -95,9 +95,19 @@ Secrets are config-driven — nothing is hardcoded or committed.
 | `IAM_ADMIN_PASSWORD` | seeded admin password (dev seed) | random password generated + printed at boot           |
 | `FCM_PROJECT_ID`     | Firebase project for FCM v1 push | push is a logged no-op                                |
 | `FCM_ACCESS_TOKEN`   | FCM v1 OAuth2 bearer             | push is a logged no-op                                |
+| `RESEND_API_KEY`     | Resend API key (transactional email) | email is a logged no-op                          |
+| `RESEND_FROM`        | Sender address                   | `onboarding@resend.dev`                               |
+| `APP_PUBLIC_URL`     | base for verification/reset links | `http://localhost:8080`                              |
 
 **Production fails closed:** with `APP_ENV`/`RUST_ENV` = `production`, a missing `DATABASE_URL` or
 `IAM_JWT_SECRET` is fatal (the gateway refuses to start) rather than falling back to a dev default.
+
+**IAM v2:** admin user management (`GET`/`POST /users`, `PATCH`/`DELETE /users/{id}`,
+`POST /users/{id}/roles`) with last-admin lockout safety; self-service (`POST /auth/change-password`,
+`PATCH`/`DELETE /auth/me`); email verification (`POST /auth/verify-email`) on register and password
+reset (`POST /auth/forgot-password` → always `202`, `POST /auth/reset-password`). Email goes through
+an `EmailSender` port (Resend adapter, credential-gated + a fake for tests); reset/verify tokens are
+random, stored hashed (SHA-256), single-use, and time-limited (reset 1h, verify 24h).
 
 ## Persistence
 
